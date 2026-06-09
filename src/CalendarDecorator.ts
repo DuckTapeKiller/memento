@@ -107,7 +107,7 @@ export class CalendarDecorator {
           const menu = new Menu();
           menu.addItem((item) => {
             item
-              .setTitle("📅 Create Event")
+              .setTitle("Create Event")
               .setIcon("calendar-plus")
               .onClick(() => {
                 this.plugin.createEventForDate(dateStr);
@@ -531,7 +531,7 @@ export class CalendarDecorator {
 
     menu.addItem((item) => {
       item
-        .setTitle("📅 Create Event")
+        .setTitle("Create Event")
         .setIcon("calendar-plus")
         .onClick(() => {
           this.plugin.createEventForDate(dateStr);

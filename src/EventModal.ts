@@ -39,8 +39,28 @@ export class EventModal extends Modal {
   }
 
   onOpen(): void {
-    const { contentEl } = this;
+    const { contentEl, modalEl } = this;
     contentEl.addClass("memento-modal");
+    modalEl.addClass("memento-modal-container");
+
+    // Scroll focused inputs to top middle section on mobile
+    contentEl.addEventListener("focusin", (e: FocusEvent) => {
+      if (!activeDocument.body.classList.contains("is-mobile")) return;
+      const target = e.target as HTMLElement;
+      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA")) {
+        const scrollTarget = target.closest(".setting-item") as HTMLElement || target;
+        window.setTimeout(() => {
+          const containerRect = contentEl.getBoundingClientRect();
+          const targetRect = scrollTarget.getBoundingClientRect();
+          // Offset by roughly 20% of the screen height to place it in the "top middle"
+          const offset = window.innerHeight * 0.2;
+          contentEl.scrollTo({
+            top: contentEl.scrollTop + (targetRect.top - containerRect.top) - offset,
+            behavior: "smooth"
+          });
+        }, 300);
+      }
+    });
 
     // Header
     const header = contentEl.createDiv({ cls: "memento-modal-header" });
