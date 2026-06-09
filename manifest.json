@@ -1,0 +1,10 @@
+{
+  "id": "memento",
+  "name": "Memento",
+  "version": "1.0.0",
+  "minAppVersion": "1.0.0",
+  "description": "Add events to your calendar with a beautiful timeline view. Features recurring events, time support, and visual day highlights. Works alongside the Calendar plugin.",
+  "author": "DuckTapeKiller",
+  "authorUrl": "https://github.com/DuckTapeKiller/memento",
+  "isDesktopOnly": false
+}

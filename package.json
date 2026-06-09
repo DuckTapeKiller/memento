@@ -1,0 +1,33 @@
+{
+  "name": "memento",
+  "version": "1.0.0",
+  "description": "Calendar events plugin for Obsidian with timeline view and recurring events",
+  "main": "main.js",
+  "type": "module",
+  "scripts": {
+    "dev": "node esbuild.config.mjs",
+    "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
+    "lint": "eslint --fix \"src/**/*.ts\"",
+    "format": "prettier --write \"src/**/*.ts\"",
+    "release": "npm run lint && npm run format && npm run build"
+  },
+  "keywords": [],
+  "author": "DuckTapeKiller",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/DuckTapeKiller/memento.git"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^22.0.0",
+    "@typescript-eslint/eslint-plugin": "^8.61.0",
+    "@typescript-eslint/parser": "^8.61.0",
+    "esbuild": "^0.24.0",
+    "eslint": "^10.4.1",
+    "obsidian": "latest",
+    "prettier": "^3.8.4",
+    "typescript": "5.6.x",
+    "typescript-eslint": "^8.61.0"
+  }
+}
