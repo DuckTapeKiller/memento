@@ -7,6 +7,10 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: write
+      attestations: write
 
     steps:
       - name: Checkout code
@@ -27,6 +31,14 @@ jobs:
 
       - name: Build plugin
         run: npm run build
+
+      - name: Generate artifact attestation
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-path: |
+            main.js
+            manifest.json
+            styles.css
 
       - name: Upload Release Assets
         uses: softprops/action-gh-release@v1

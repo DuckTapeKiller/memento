@@ -65,13 +65,13 @@ export class CalendarDecorator {
   private createAddButtonOverlay(): void {
     if (this.addBtnOverlay) return;
 
-    this.addBtnOverlay = document.createElement("div");
+    this.addBtnOverlay = activeDocument.createElement("div");
     this.addBtnOverlay.className = "memento-add-btn memento-floating-btn";
-    this.addBtnOverlay.innerHTML = "+";
+    this.addBtnOverlay.setText("+");
     this.addBtnOverlay.setAttribute("aria-label", "Create Event");
-    this.addBtnOverlay.style.display = "none"; // Hidden initially
+    this.addBtnOverlay.setCssStyles({ display: "none" }); // Hidden initially
 
-    document.body.appendChild(this.addBtnOverlay);
+    activeDocument.body.appendChild(this.addBtnOverlay);
 
     this.addBtnOverlay.addEventListener("click", (e) => {
       e.stopPropagation();
@@ -126,7 +126,7 @@ export class CalendarDecorator {
                 .setTitle("📋 View Events Timeline")
                 .setIcon("list")
                 .onClick(() => {
-                  this.plugin.activateTimelineView();
+                  void this.plugin.activateTimelineView();
                 });
             });
           }
@@ -168,9 +168,11 @@ export class CalendarDecorator {
           const rect = dayCell.getBoundingClientRect();
 
           // Position the floating button over the cell
-          this.addBtnOverlay.style.display = "flex";
-          this.addBtnOverlay.style.top = `${rect.top + 2}px`;
-          this.addBtnOverlay.style.left = `${rect.left + 2}px`;
+          this.addBtnOverlay.setCssStyles({
+            display: "flex",
+            top: `${rect.top + 2}px`,
+            left: `${rect.left + 2}px`,
+          });
           return;
         }
       }
@@ -178,7 +180,7 @@ export class CalendarDecorator {
 
     // Otherwise, hide the button
     if (this.addBtnOverlay) {
-      this.addBtnOverlay.style.display = "none";
+      this.addBtnOverlay.setCssStyles({ display: "none" });
       this.currentHoverDate = null;
     }
   }
@@ -209,7 +211,7 @@ export class CalendarDecorator {
     });
 
     // Observe the workspace container for changes
-    const workspaceEl = document.querySelector(".workspace");
+    const workspaceEl = activeDocument.querySelector(".workspace");
     if (workspaceEl) {
       this.observer.observe(workspaceEl, {
         childList: true,
@@ -548,7 +550,7 @@ export class CalendarDecorator {
           .setTitle("📋 View Events")
           .setIcon("list")
           .onClick(() => {
-            this.plugin.activateTimelineView();
+            void this.plugin.activateTimelineView();
           });
       });
     }
@@ -576,7 +578,7 @@ export class CalendarDecorator {
     }
 
     // Remove all decoration classes
-    const cells = document.querySelectorAll(".has-memento-event");
+    const cells = activeDocument.querySelectorAll(".has-memento-event");
     cells.forEach((cell) => cell.removeClass("has-memento-event"));
   }
 }

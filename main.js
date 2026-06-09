@@ -256,8 +256,7 @@ var EventModal = class extends import_obsidian.Modal {
       text.inputEl.min = "0";
       text.inputEl.max = "23";
       text.inputEl.placeholder = "HH";
-      text.inputEl.style.width = "4rem";
-      text.inputEl.style.textAlign = "center";
+      text.inputEl.setCssStyles({ width: "4rem", textAlign: "center" });
       text.setValue(currentHour !== "--" ? currentHour : "");
       text.onChange((value) => {
         let val = parseInt(value, 10);
@@ -276,15 +275,13 @@ var EventModal = class extends import_obsidian.Modal {
       text: " : ",
       cls: "memento-time-separator"
     });
-    separator.style.margin = "0 0.2rem";
-    separator.style.fontWeight = "bold";
+    separator.setCssStyles({ margin: "0 0.2rem", fontWeight: "bold" });
     timeSetting.addText((text) => {
       text.inputEl.type = "number";
       text.inputEl.min = "0";
       text.inputEl.max = "59";
       text.inputEl.placeholder = "MM";
-      text.inputEl.style.width = "4rem";
-      text.inputEl.style.textAlign = "center";
+      text.inputEl.setCssStyles({ width: "4rem", textAlign: "center" });
       text.setValue(currentMin !== "--" ? currentMin : "");
       text.onChange((value) => {
         let val = parseInt(value, 10);
@@ -347,11 +344,11 @@ var EventModal = class extends import_obsidian.Modal {
       cls: "memento-btn memento-btn-primary"
     });
     submitBtn.addEventListener("click", () => this.handleSubmit());
-    setTimeout(() => {
+    window.setTimeout(() => {
       if (titleInput) titleInput.focus();
     }, 50);
     this.scope.register([], "Enter", (e) => {
-      if (document.activeElement?.tagName !== "TEXTAREA") {
+      if (activeDocument.activeElement?.tagName !== "TEXTAREA") {
         e.preventDefault();
         this.handleSubmit();
       }
@@ -360,7 +357,7 @@ var EventModal = class extends import_obsidian.Modal {
   handleSubmit() {
     if (!this.event.title?.trim()) {
       this.contentEl.addClass("memento-shake");
-      setTimeout(() => this.contentEl.removeClass("memento-shake"), 500);
+      window.setTimeout(() => this.contentEl.removeClass("memento-shake"), 500);
       return;
     }
     const fullEvent = {
@@ -406,7 +403,7 @@ var ConfirmModal = class extends import_obsidian2.Modal {
         this.onConfirm();
       });
       if (this.isWarning) {
-        btn.setWarning();
+        btn.setDestructive();
       } else {
         btn.setCta();
       }
@@ -457,47 +454,51 @@ var TimelineView = class extends import_obsidian2.ItemView {
     const ul = timelineWrapper.createEl("ul", { cls: "memento-timeline" });
     for (const entry of entries) {
       const eventLi = ul.createEl("li", { cls: "memento-tl-event" });
-      eventLi.addEventListener("click", async () => {
-        const filePath = this.plugin.getEventNotePath(
-          entry.event,
-          entry.occurrenceDate
-        );
-        const fileExists = await this.plugin.app.vault.adapter.exists(filePath);
-        if (fileExists) {
-          await this.plugin.createNoteForEvent(
+      eventLi.addEventListener("click", () => {
+        void (async () => {
+          const filePath = this.plugin.getEventNotePath(
             entry.event,
             entry.occurrenceDate
           );
-        } else {
-          new ConfirmModal(
-            this.plugin.app,
-            "Create Note",
-            `Do you want to create a new note for "${entry.event.title}"?`,
-            async () => {
-              await this.plugin.createNoteForEvent(
-                entry.event,
-                entry.occurrenceDate
-              );
-            },
-            "Create Note",
-            false
-          ).open();
-        }
+          const fileExists = await this.plugin.app.vault.adapter.exists(filePath);
+          if (fileExists) {
+            await this.plugin.createNoteForEvent(
+              entry.event,
+              entry.occurrenceDate
+            );
+          } else {
+            new ConfirmModal(
+              this.plugin.app,
+              "Create Note",
+              `Do you want to create a new note for "${entry.event.title}"?`,
+              () => {
+                void this.plugin.createNoteForEvent(
+                  entry.event,
+                  entry.occurrenceDate
+                );
+              },
+              "Create Note",
+              false
+            ).open();
+          }
+        })();
       });
       const deleteBtn = eventLi.createDiv({ cls: "memento-tl-delete-btn" });
-      deleteBtn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>`;
-      deleteBtn.addEventListener("click", async (e) => {
+      (0, import_obsidian2.setIcon)(deleteBtn, "trash-2");
+      deleteBtn.addEventListener("click", (e) => {
         e.stopPropagation();
         new ConfirmModal(
           this.plugin.app,
           "Delete Event",
           "Are you sure you want to permanently delete this event?",
-          async () => {
-            this.plugin.settings.events = this.plugin.settings.events.filter(
-              (ev) => ev.id !== entry.event.id
-            );
-            await this.plugin.saveSettings();
-            this.render();
+          () => {
+            void (async () => {
+              this.plugin.settings.events = this.plugin.settings.events.filter(
+                (ev) => ev.id !== entry.event.id
+              );
+              await this.plugin.saveSettings();
+              this.render();
+            })();
           },
           "Delete",
           true
@@ -567,7 +568,7 @@ var TimelineView = class extends import_obsidian2.ItemView {
   renderEmptyState(container) {
     const empty = container.createDiv({ cls: "memento-empty-state" });
     const iconDiv = empty.createDiv({ cls: "memento-empty-icon" });
-    iconDiv.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line><path d="M8 14h.01"></path><path d="M12 14h.01"></path><path d="M16 14h.01"></path><path d="M8 18h.01"></path><path d="M12 18h.01"></path></svg>`;
+    (0, import_obsidian2.setIcon)(iconDiv, "calendar-days");
     empty.createEl("h3", { text: "No upcoming events" });
     empty.createEl("p", {
       text: "Right-click a day in the calendar or use the command palette to create your first event.",
@@ -633,12 +634,12 @@ var CalendarDecorator = class {
    */
   createAddButtonOverlay() {
     if (this.addBtnOverlay) return;
-    this.addBtnOverlay = document.createElement("div");
+    this.addBtnOverlay = activeDocument.createElement("div");
     this.addBtnOverlay.className = "memento-add-btn memento-floating-btn";
-    this.addBtnOverlay.innerHTML = "+";
+    this.addBtnOverlay.setText("+");
     this.addBtnOverlay.setAttribute("aria-label", "Create Event");
-    this.addBtnOverlay.style.display = "none";
-    document.body.appendChild(this.addBtnOverlay);
+    this.addBtnOverlay.setCssStyles({ display: "none" });
+    activeDocument.body.appendChild(this.addBtnOverlay);
     this.addBtnOverlay.addEventListener("click", (e) => {
       e.stopPropagation();
       e.preventDefault();
@@ -677,7 +678,7 @@ var CalendarDecorator = class {
             menu.addSeparator();
             menu.addItem((item) => {
               item.setTitle("\u{1F4CB} View Events Timeline").setIcon("list").onClick(() => {
-                this.plugin.activateTimelineView();
+                void this.plugin.activateTimelineView();
               });
             });
           }
@@ -706,15 +707,17 @@ var CalendarDecorator = class {
         if (dateStr && this.addBtnOverlay) {
           this.currentHoverDate = dateStr;
           const rect = dayCell.getBoundingClientRect();
-          this.addBtnOverlay.style.display = "flex";
-          this.addBtnOverlay.style.top = `${rect.top + 2}px`;
-          this.addBtnOverlay.style.left = `${rect.left + 2}px`;
+          this.addBtnOverlay.setCssStyles({
+            display: "flex",
+            top: `${rect.top + 2}px`,
+            left: `${rect.left + 2}px`
+          });
           return;
         }
       }
     }
     if (this.addBtnOverlay) {
-      this.addBtnOverlay.style.display = "none";
+      this.addBtnOverlay.setCssStyles({ display: "none" });
       this.currentHoverDate = null;
     }
   }
@@ -740,7 +743,7 @@ var CalendarDecorator = class {
     this.observer = new MutationObserver(() => {
       this.scheduleDecoration();
     });
-    const workspaceEl = document.querySelector(".workspace");
+    const workspaceEl = activeDocument.querySelector(".workspace");
     if (workspaceEl) {
       this.observer.observe(workspaceEl, {
         childList: true,
@@ -1017,7 +1020,7 @@ var CalendarDecorator = class {
       menu.addSeparator();
       menu.addItem((item) => {
         item.setTitle("\u{1F4CB} View Events").setIcon("list").onClick(() => {
-          this.plugin.activateTimelineView();
+          void this.plugin.activateTimelineView();
         });
       });
     }
@@ -1040,7 +1043,7 @@ var CalendarDecorator = class {
     if (this.decorationTimeoutId !== null) {
       window.clearTimeout(this.decorationTimeoutId);
     }
-    const cells = document.querySelectorAll(".has-memento-event");
+    const cells = activeDocument.querySelectorAll(".has-memento-event");
     cells.forEach((cell) => cell.removeClass("has-memento-event"));
   }
 };
@@ -1053,15 +1056,14 @@ var EventSettingsTab = class extends import_obsidian4.PluginSettingTab {
     this.plugin = plugin;
   }
   display() {
+    this.render();
+  }
+  render() {
     const { containerEl } = this;
     containerEl.empty();
     containerEl.addClass("memento-settings");
-    containerEl.createEl("h2", { text: "Memento \u2014 Calendar Events" });
-    containerEl.createEl("p", {
-      text: "Manage your calendar events and plugin settings.",
-      cls: "setting-item-description"
-    });
-    containerEl.createEl("h3", { text: "General Settings" });
+    new import_obsidian4.Setting(containerEl).setName("Memento \u2014 Calendar Events").setDesc("Manage your calendar events and plugin settings.").setHeading();
+    new import_obsidian4.Setting(containerEl).setName("General Settings").setHeading();
     new import_obsidian4.Setting(containerEl).setName("Timeline view mode").setDesc("Choose which events to show in the timeline view").addDropdown(
       (dropdown) => dropdown.addOption("all", "Show all upcoming events").addOption("month", "Show events for current month only").setValue(this.plugin.settings.timelineViewMode).onChange(async (value) => {
         this.plugin.settings.timelineViewMode = value;
@@ -1071,8 +1073,7 @@ var EventSettingsTab = class extends import_obsidian4.PluginSettingTab {
     new import_obsidian4.Setting(containerEl).setName("Show past events").setDesc("Display expired one-time events in the list below").addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.showPastEventsInSettings).onChange(async (value) => {
         this.plugin.settings.showPastEventsInSettings = value;
-        await this.plugin.saveSettings();
-        this.display();
+        void this.plugin.saveSettings().then(() => this.render());
       })
     );
     new import_obsidian4.Setting(containerEl).setName("Frontmatter language").setDesc("Language for the properties when creating a note from an event").addDropdown(
@@ -1089,16 +1090,13 @@ var EventSettingsTab = class extends import_obsidian4.PluginSettingTab {
         await this.plugin.saveSettings();
       })
     );
-    containerEl.createEl("h3", {
-      text: "Events",
-      cls: "memento-settings-events-heading"
-    });
+    const eventsHeading = new import_obsidian4.Setting(containerEl).setName("Events").setHeading();
+    eventsHeading.settingEl.addClass("memento-settings-events-heading");
     new import_obsidian4.Setting(containerEl).setName("Create a new event").setDesc("Add a new event to your calendar").addButton(
       (button) => button.setButtonText("+ Add Event").setCta().onClick(() => {
-        new EventModal(this.app, async (event) => {
+        new EventModal(this.app, (event) => {
           this.plugin.settings.events.push(event);
-          await this.plugin.saveSettings();
-          this.display();
+          void this.plugin.saveSettings().then(() => this.render());
         }).open();
       })
     );
@@ -1118,20 +1116,12 @@ var EventSettingsTab = class extends import_obsidian4.PluginSettingTab {
       }
     }
     if (this.plugin.settings.events.length > 0) {
-      containerEl.createEl("h3", {
-        text: "Danger Zone",
-        cls: "memento-settings-danger-heading"
-      });
+      const dangerHeading = new import_obsidian4.Setting(containerEl).setName("Danger Zone").setHeading();
+      dangerHeading.settingEl.addClass("memento-settings-danger-heading");
       new import_obsidian4.Setting(containerEl).setName("Delete all events").setDesc("Permanently remove all events. This cannot be undone.").addButton(
-        (button) => button.setButtonText("Delete All").setWarning().onClick(async () => {
-          const confirmed = confirm(
-            "Are you sure you want to delete ALL events? This cannot be undone."
-          );
-          if (confirmed) {
-            this.plugin.settings.events = [];
-            await this.plugin.saveSettings();
-            this.display();
-          }
+        (button) => button.setButtonText("Delete All").setDestructive().onClick(() => {
+          this.plugin.settings.events = [];
+          void this.plugin.saveSettings().then(() => this.render());
         })
       );
     }
@@ -1196,18 +1186,17 @@ var EventSettingsTab = class extends import_obsidian4.PluginSettingTab {
       cls: "memento-settings-btn memento-settings-btn-edit",
       attr: { "aria-label": "Edit event" }
     });
-    editBtn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg>`;
+    (0, import_obsidian4.setIcon)(editBtn, "pencil");
     editBtn.addEventListener("click", () => {
       new EventModal(
         this.app,
-        async (updatedEvent) => {
+        (updatedEvent) => {
           const idx = this.plugin.settings.events.findIndex(
             (e) => e.id === event.id
           );
           if (idx !== -1) {
             this.plugin.settings.events[idx] = updatedEvent;
-            await this.plugin.saveSettings();
-            this.display();
+            void this.plugin.saveSettings().then(() => this.render());
           }
         },
         event
@@ -1217,33 +1206,22 @@ var EventSettingsTab = class extends import_obsidian4.PluginSettingTab {
       cls: "memento-settings-btn memento-settings-btn-delete",
       attr: { "aria-label": "Delete event" }
     });
-    deleteBtn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>`;
-    deleteBtn.addEventListener("click", async () => {
-      const confirmed = confirm(
-        `Delete "${event.title}"? This cannot be undone.`
+    (0, import_obsidian4.setIcon)(deleteBtn, "trash-2");
+    deleteBtn.addEventListener("click", () => {
+      this.plugin.settings.events = this.plugin.settings.events.filter(
+        (e) => e.id !== event.id
       );
-      if (confirmed) {
-        this.plugin.settings.events = this.plugin.settings.events.filter(
-          (e) => e.id !== event.id
-        );
-        await this.plugin.saveSettings();
-        this.display();
-      }
+      void this.plugin.saveSettings().then(() => this.render());
     });
   }
 };
 
 // src/main.ts
 var MementoPlugin = class extends import_obsidian5.Plugin {
-  constructor() {
-    super(...arguments);
-    this.timelineView = null;
-  }
   async onload() {
     await this.loadSettings();
     this.registerView(VIEW_TYPE_TIMELINE, (leaf) => {
-      this.timelineView = new TimelineView(leaf, this);
-      return this.timelineView;
+      return new TimelineView(leaf, this);
     });
     this.addSettingTab(new EventSettingsTab(this.app, this));
     this.decorator = new CalendarDecorator(this);
@@ -1251,29 +1229,29 @@ var MementoPlugin = class extends import_obsidian5.Plugin {
       id: "create-event",
       name: "Create a new event",
       callback: () => {
-        this.openCreateEventModal();
+        void this.openCreateEventModal();
       }
     });
     this.addCommand({
       id: "create-event-today",
       name: "Create event for today",
       callback: () => {
-        this.createEventForDate(this.getTodayStr());
+        void this.createEventForDate(this.getTodayStr());
       }
     });
     this.addCommand({
       id: "open-timeline",
       name: "Open event timeline",
       callback: () => {
-        this.activateTimelineView();
+        void this.activateTimelineView();
       }
     });
     this.addRibbonIcon("calendar-clock", "Memento \u2014 Event Timeline", () => {
-      this.activateTimelineView();
+      void this.activateTimelineView();
     });
     this.app.workspace.onLayoutReady(() => {
       this.decorator.start();
-      this.activateTimelineView();
+      void this.activateTimelineView();
     });
     this.registerInterval(
       window.setInterval(() => {
@@ -1292,7 +1270,8 @@ var MementoPlugin = class extends import_obsidian5.Plugin {
   }
   // ─── Settings Persistence ────────────────────────────────────────
   async loadSettings() {
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    const data = await this.loadData();
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, data || {});
   }
   async saveSettings() {
     await this.saveData(this.settings);
@@ -1304,9 +1283,9 @@ var MementoPlugin = class extends import_obsidian5.Plugin {
    * Open the create event modal (no date pre-filled — user picks)
    */
   openCreateEventModal() {
-    new EventModal(this.app, async (event) => {
+    new EventModal(this.app, (event) => {
       this.settings.events.push(event);
-      await this.saveSettings();
+      void this.saveSettings();
     }).open();
   }
   /**
@@ -1315,9 +1294,9 @@ var MementoPlugin = class extends import_obsidian5.Plugin {
   createEventForDate(dateStr) {
     new EventModal(
       this.app,
-      async (event) => {
+      (event) => {
         this.settings.events.push(event);
-        await this.saveSettings();
+        void this.saveSettings();
       },
       void 0,
       dateStr
@@ -1342,7 +1321,11 @@ var MementoPlugin = class extends import_obsidian5.Plugin {
       }
     }
     const filePath = this.getEventNotePath(event, occurrenceDate);
-    let file = vault.getAbstractFileByPath(filePath);
+    const abstractFile = vault.getAbstractFileByPath(filePath);
+    let file = null;
+    if (abstractFile instanceof import_obsidian5.TFile) {
+      file = abstractFile;
+    }
     if (!file) {
       const isEs = this.settings.frontmatterLanguage === "es";
       const titleKey = isEs ? "T\xEDtulo" : "Title";
@@ -1391,15 +1374,18 @@ var MementoPlugin = class extends import_obsidian5.Plugin {
       }
     }
     if (leaf) {
-      workspace.revealLeaf(leaf);
+      void workspace.revealLeaf(leaf);
     }
   }
   /**
    * Refresh the timeline view contents
    */
   refreshTimeline() {
-    if (this.timelineView) {
-      this.timelineView.render();
+    const leaves = this.app.workspace.getLeavesOfType(VIEW_TYPE_TIMELINE);
+    for (const leaf of leaves) {
+      if (leaf.view instanceof TimelineView) {
+        leaf.view.render();
+      }
     }
   }
   // ─── Utilities ───────────────────────────────────────────────────
