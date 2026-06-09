@@ -25,14 +25,7 @@ export class EventSettingsTab extends PluginSettingTab {
     containerEl.empty();
     containerEl.addClass("memento-settings");
 
-    // Header
-    new Setting(containerEl)
-      .setName("Memento — Calendar Events")
-      .setDesc("Manage your calendar events and plugin settings.")
-      .setHeading();
-
-    // General settings section
-    new Setting(containerEl).setName("General Settings").setHeading();
+    // Header and General Settings removed per Obsidian lint rules
 
     new Setting(containerEl)
       .setName("Timeline view mode")

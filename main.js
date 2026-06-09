@@ -1062,8 +1062,6 @@ var EventSettingsTab = class extends import_obsidian4.PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
     containerEl.addClass("memento-settings");
-    new import_obsidian4.Setting(containerEl).setName("Memento \u2014 Calendar Events").setDesc("Manage your calendar events and plugin settings.").setHeading();
-    new import_obsidian4.Setting(containerEl).setName("General Settings").setHeading();
     new import_obsidian4.Setting(containerEl).setName("Timeline view mode").setDesc("Choose which events to show in the timeline view").addDropdown(
       (dropdown) => dropdown.addOption("all", "Show all upcoming events").addOption("month", "Show events for current month only").setValue(this.plugin.settings.timelineViewMode).onChange(async (value) => {
         this.plugin.settings.timelineViewMode = value;

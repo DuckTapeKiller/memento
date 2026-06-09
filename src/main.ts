@@ -88,7 +88,7 @@ export default class MementoPlugin extends Plugin {
   // ─── Settings Persistence ────────────────────────────────────────
 
   async loadSettings(): Promise<void> {
-    const data = await this.loadData();
+    const data = (await this.loadData()) as Partial<MementoSettings> | null | undefined;
     this.settings = Object.assign({}, DEFAULT_SETTINGS, data || {});
   }
 
