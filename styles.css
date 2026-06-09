@@ -99,6 +99,22 @@ body .memento-add-btn.memento-floating-btn:hover {
   max-width: 480px;
 }
 
+body.is-mobile div.modal.memento-modal-container {
+  width: 100vw;
+  height: 100vh;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  border-radius: 0;
+  padding: 0;
+}
+
+body.is-mobile .memento-modal {
+  overflow-y: auto;
+  padding-bottom: 50vh;
+  height: 100%;
+}
+
 .memento-modal-header {
   margin-bottom: 1rem;
 }

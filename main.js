@@ -217,8 +217,25 @@ var EventModal = class extends import_obsidian.Modal {
     }
   }
   onOpen() {
-    const { contentEl } = this;
+    const { contentEl, modalEl } = this;
     contentEl.addClass("memento-modal");
+    modalEl.addClass("memento-modal-container");
+    contentEl.addEventListener("focusin", (e) => {
+      if (!activeDocument.body.classList.contains("is-mobile")) return;
+      const target = e.target;
+      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA")) {
+        const scrollTarget = target.closest(".setting-item") || target;
+        window.setTimeout(() => {
+          const containerRect = contentEl.getBoundingClientRect();
+          const targetRect = scrollTarget.getBoundingClientRect();
+          const offset = window.innerHeight * 0.2;
+          contentEl.scrollTo({
+            top: contentEl.scrollTop + (targetRect.top - containerRect.top) - offset,
+            behavior: "smooth"
+          });
+        }, 300);
+      }
+    });
     const header = contentEl.createDiv({ cls: "memento-modal-header" });
     header.createEl("h2", {
       text: this.isEditing ? "Edit Event" : "Create Event",
@@ -667,7 +684,7 @@ var CalendarDecorator = class {
           e.stopImmediatePropagation();
           const menu = new import_obsidian3.Menu();
           menu.addItem((item) => {
-            item.setTitle("\u{1F4C5} Create Event").setIcon("calendar-plus").onClick(() => {
+            item.setTitle("Create Event").setIcon("calendar-plus").onClick(() => {
               this.plugin.createEventForDate(dateStr);
             });
           });
@@ -1009,7 +1026,7 @@ var CalendarDecorator = class {
   onDayContextMenu(e, dateStr) {
     const menu = new import_obsidian3.Menu();
     menu.addItem((item) => {
-      item.setTitle("\u{1F4C5} Create Event").setIcon("calendar-plus").onClick(() => {
+      item.setTitle("Create Event").setIcon("calendar-plus").onClick(() => {
         this.plugin.createEventForDate(dateStr);
       });
     });
