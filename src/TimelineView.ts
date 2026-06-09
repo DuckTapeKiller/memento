@@ -1,4 +1,11 @@
-import { ItemView, WorkspaceLeaf, Modal, Setting, App } from "obsidian";
+import {
+  ItemView,
+  WorkspaceLeaf,
+  Modal,
+  Setting,
+  App,
+  setIcon,
+} from "obsidian";
 import type MementoPlugin from "./main";
 import {
   VIEW_TYPE_TIMELINE,
@@ -37,7 +44,7 @@ class ConfirmModal extends Modal {
           this.onConfirm();
         });
         if (this.isWarning) {
-          btn.setWarning();
+          btn.setDestructive();
         } else {
           btn.setCta();
         }
@@ -106,50 +113,55 @@ export class TimelineView extends ItemView {
       const eventLi = ul.createEl("li", { cls: "memento-tl-event" });
 
       // Make the event clickable
-      eventLi.addEventListener("click", async () => {
-        const filePath = this.plugin.getEventNotePath(
-          entry.event,
-          entry.occurrenceDate,
-        );
-        const fileExists = await this.plugin.app.vault.adapter.exists(filePath);
-
-        if (fileExists) {
-          await this.plugin.createNoteForEvent(
+      eventLi.addEventListener("click", () => {
+        void (async () => {
+          const filePath = this.plugin.getEventNotePath(
             entry.event,
             entry.occurrenceDate,
           );
-        } else {
-          new ConfirmModal(
-            this.plugin.app,
-            "Create Note",
-            `Do you want to create a new note for "${entry.event.title}"?`,
-            async () => {
-              await this.plugin.createNoteForEvent(
-                entry.event,
-                entry.occurrenceDate,
-              );
-            },
-            "Create Note",
-            false,
-          ).open();
-        }
+          const fileExists =
+            await this.plugin.app.vault.adapter.exists(filePath);
+
+          if (fileExists) {
+            await this.plugin.createNoteForEvent(
+              entry.event,
+              entry.occurrenceDate,
+            );
+          } else {
+            new ConfirmModal(
+              this.plugin.app,
+              "Create Note",
+              `Do you want to create a new note for "${entry.event.title}"?`,
+              () => {
+                void this.plugin.createNoteForEvent(
+                  entry.event,
+                  entry.occurrenceDate,
+                );
+              },
+              "Create Note",
+              false,
+            ).open();
+          }
+        })();
       });
 
       // Delete button (top right, visible on hover)
       const deleteBtn = eventLi.createDiv({ cls: "memento-tl-delete-btn" });
-      deleteBtn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>`;
-      deleteBtn.addEventListener("click", async (e) => {
+      setIcon(deleteBtn, "trash-2");
+      deleteBtn.addEventListener("click", (e) => {
         e.stopPropagation(); // prevent opening the note
         new ConfirmModal(
           this.plugin.app,
           "Delete Event",
           "Are you sure you want to permanently delete this event?",
-          async () => {
-            this.plugin.settings.events = this.plugin.settings.events.filter(
-              (ev) => ev.id !== entry.event.id,
-            );
-            await this.plugin.saveSettings();
-            this.render();
+          () => {
+            void (async () => {
+              this.plugin.settings.events = this.plugin.settings.events.filter(
+                (ev) => ev.id !== entry.event.id,
+              );
+              await this.plugin.saveSettings();
+              this.render();
+            })();
           },
           "Delete",
           true,
@@ -238,7 +250,7 @@ export class TimelineView extends ItemView {
     const empty = container.createDiv({ cls: "memento-empty-state" });
 
     const iconDiv = empty.createDiv({ cls: "memento-empty-icon" });
-    iconDiv.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line><path d="M8 14h.01"></path><path d="M12 14h.01"></path><path d="M16 14h.01"></path><path d="M8 18h.01"></path><path d="M12 18h.01"></path></svg>`;
+    setIcon(iconDiv, "calendar-days");
 
     empty.createEl("h3", { text: "No upcoming events" });
     empty.createEl("p", {

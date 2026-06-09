@@ -13,7 +13,6 @@ import { EventSettingsTab } from "./EventSettingsTab";
 export default class MementoPlugin extends Plugin {
   settings!: MementoSettings;
   private decorator!: CalendarDecorator;
-  private timelineView: TimelineView | null = null;
 
   async onload(): Promise<void> {
     // Load settings
@@ -21,8 +20,7 @@ export default class MementoPlugin extends Plugin {
 
     // Register the timeline view
     this.registerView(VIEW_TYPE_TIMELINE, (leaf: WorkspaceLeaf) => {
-      this.timelineView = new TimelineView(leaf, this);
-      return this.timelineView;
+      return new TimelineView(leaf, this);
     });
 
     // Register settings tab
@@ -36,7 +34,7 @@ export default class MementoPlugin extends Plugin {
       id: "create-event",
       name: "Create a new event",
       callback: () => {
-        this.openCreateEventModal();
+        void this.openCreateEventModal();
       },
     });
 
@@ -44,7 +42,7 @@ export default class MementoPlugin extends Plugin {
       id: "create-event-today",
       name: "Create event for today",
       callback: () => {
-        this.createEventForDate(this.getTodayStr());
+        void this.createEventForDate(this.getTodayStr());
       },
     });
 
@@ -52,19 +50,18 @@ export default class MementoPlugin extends Plugin {
       id: "open-timeline",
       name: "Open event timeline",
       callback: () => {
-        this.activateTimelineView();
+        void this.activateTimelineView();
       },
     });
 
     // Ribbon icon
     this.addRibbonIcon("calendar-clock", "Memento — Event Timeline", () => {
-      this.activateTimelineView();
+      void this.activateTimelineView();
     });
 
-    // Start the decorator after layout is ready
     this.app.workspace.onLayoutReady(() => {
       this.decorator.start();
-      this.activateTimelineView();
+      void this.activateTimelineView();
     });
 
     // Set up periodic refresh (check once per minute for event expiry)
@@ -91,7 +88,8 @@ export default class MementoPlugin extends Plugin {
   // ─── Settings Persistence ────────────────────────────────────────
 
   async loadSettings(): Promise<void> {
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    const data = await this.loadData();
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, data || {});
   }
 
   async saveSettings(): Promise<void> {
@@ -106,9 +104,9 @@ export default class MementoPlugin extends Plugin {
    * Open the create event modal (no date pre-filled — user picks)
    */
   openCreateEventModal(): void {
-    new EventModal(this.app, async (event: MementoEvent) => {
+    new EventModal(this.app, (event: MementoEvent) => {
       this.settings.events.push(event);
-      await this.saveSettings();
+      void this.saveSettings();
     }).open();
   }
 
@@ -118,9 +116,9 @@ export default class MementoPlugin extends Plugin {
   createEventForDate(dateStr: string): void {
     new EventModal(
       this.app,
-      async (event: MementoEvent) => {
+      (event: MementoEvent) => {
         this.settings.events.push(event);
-        await this.saveSettings();
+        void this.saveSettings();
       },
       undefined,
       dateStr,
@@ -154,7 +152,11 @@ export default class MementoPlugin extends Plugin {
 
     const filePath = this.getEventNotePath(event, occurrenceDate);
 
-    let file = vault.getAbstractFileByPath(filePath) as TFile;
+    const abstractFile = vault.getAbstractFileByPath(filePath);
+    let file: TFile | null = null;
+    if (abstractFile instanceof TFile) {
+      file = abstractFile;
+    }
 
     if (!file) {
       const isEs = this.settings.frontmatterLanguage === "es";
@@ -211,7 +213,7 @@ export default class MementoPlugin extends Plugin {
     }
 
     if (leaf) {
-      workspace.revealLeaf(leaf);
+      void workspace.revealLeaf(leaf);
     }
   }
 
@@ -219,8 +221,11 @@ export default class MementoPlugin extends Plugin {
    * Refresh the timeline view contents
    */
   refreshTimeline(): void {
-    if (this.timelineView) {
-      this.timelineView.render();
+    const leaves = this.app.workspace.getLeavesOfType(VIEW_TYPE_TIMELINE);
+    for (const leaf of leaves) {
+      if (leaf.view instanceof TimelineView) {
+        leaf.view.render();
+      }
     }
   }
 

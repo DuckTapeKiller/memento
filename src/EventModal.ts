@@ -96,8 +96,7 @@ export class EventModal extends Modal {
       text.inputEl.min = "0";
       text.inputEl.max = "23";
       text.inputEl.placeholder = "HH";
-      text.inputEl.style.width = "4rem";
-      text.inputEl.style.textAlign = "center";
+      text.inputEl.setCssStyles({ width: "4rem", textAlign: "center" });
       text.setValue(currentHour !== "--" ? currentHour : "");
       text.onChange((value) => {
         let val = parseInt(value, 10);
@@ -118,8 +117,7 @@ export class EventModal extends Modal {
       text: " : ",
       cls: "memento-time-separator",
     });
-    separator.style.margin = "0 0.2rem";
-    separator.style.fontWeight = "bold";
+    separator.setCssStyles({ margin: "0 0.2rem", fontWeight: "bold" });
 
     // Minute Input
     timeSetting.addText((text) => {
@@ -127,8 +125,7 @@ export class EventModal extends Modal {
       text.inputEl.min = "0";
       text.inputEl.max = "59";
       text.inputEl.placeholder = "MM";
-      text.inputEl.style.width = "4rem";
-      text.inputEl.style.textAlign = "center";
+      text.inputEl.setCssStyles({ width: "4rem", textAlign: "center" });
       text.setValue(currentMin !== "--" ? currentMin : "");
       text.onChange((value) => {
         let val = parseInt(value, 10);
@@ -213,14 +210,14 @@ export class EventModal extends Modal {
     submitBtn.addEventListener("click", () => this.handleSubmit());
 
     // Focus title input after render
-    setTimeout(() => {
+    window.setTimeout(() => {
       if (titleInput) titleInput.focus();
     }, 50);
 
     // Enter key to submit
     this.scope.register([], "Enter", (e) => {
       // Only submit if not in textarea
-      if (document.activeElement?.tagName !== "TEXTAREA") {
+      if (activeDocument.activeElement?.tagName !== "TEXTAREA") {
         e.preventDefault();
         this.handleSubmit();
       }
@@ -231,7 +228,7 @@ export class EventModal extends Modal {
     if (!this.event.title?.trim()) {
       // Shake the modal to indicate validation error
       this.contentEl.addClass("memento-shake");
-      setTimeout(() => this.contentEl.removeClass("memento-shake"), 500);
+      window.setTimeout(() => this.contentEl.removeClass("memento-shake"), 500);
       return;
     }
 
