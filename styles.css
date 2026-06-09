@@ -24,10 +24,10 @@
 /*  1. CALENDAR DAY BORDERS & ADD BUTTON                             */
 /* ================================================================= */
 
-.has-memento-event {
+body .has-memento-event {
   position: relative;
-  border: var(--memento-border-width) solid var(--memento-accent) !important;
-  border-radius: var(--memento-radius-sm) !important;
+  border: var(--memento-border-width) solid var(--memento-accent);
+  border-radius: var(--memento-radius-sm);
   transition:
     border-color 0.3s ease,
     background-color 0.2s ease;
@@ -86,8 +86,8 @@
     background 0.2s ease;
 }
 
-.memento-add-btn.memento-floating-btn:hover {
-  transform: scale(1.2) !important;
+body .memento-add-btn.memento-floating-btn:hover {
+  transform: scale(1.2);
   background: var(--memento-accent-hover);
 }
 
@@ -134,14 +134,14 @@
   padding: 0.6rem 0;
 }
 
-.memento-date-input,
-.memento-time-input,
-.memento-title-input {
-  width: 100% !important;
+body .memento-date-input,
+body .memento-time-input,
+body .memento-title-input {
+  width: 100%;
 }
 
-.memento-context-input {
-  width: 100% !important;
+body .memento-context-input {
+  width: 100%;
   min-height: 80px;
   resize: vertical;
 }
@@ -211,17 +211,17 @@
 }
 
 /* Override default blue background on time/date inputs in Chromium/Electron */
-.memento-date-input::-webkit-datetime-edit-day-field:focus,
-.memento-date-input::-webkit-datetime-edit-month-field:focus,
-.memento-date-input::-webkit-datetime-edit-year-field:focus,
-.memento-time-input::-webkit-datetime-edit-hour-field:focus,
-.memento-time-input::-webkit-datetime-edit-minute-field:focus,
-.memento-time-input::-webkit-datetime-edit-ampm-field:focus {
+body .memento-date-input::-webkit-datetime-edit-day-field:focus,
+body .memento-date-input::-webkit-datetime-edit-month-field:focus,
+body .memento-date-input::-webkit-datetime-edit-year-field:focus,
+body .memento-time-input::-webkit-datetime-edit-hour-field:focus,
+body .memento-time-input::-webkit-datetime-edit-minute-field:focus,
+body .memento-time-input::-webkit-datetime-edit-ampm-field:focus {
   background-color: var(
     --text-highlight-bg,
     var(--color-accent, var(--interactive-accent, #8b5cf6))
-  ) !important;
-  color: var(--text-normal) !important;
+  );
+  color: var(--text-normal);
 }
 
 /* ================================================================= */
@@ -460,8 +460,8 @@
   font-family: var(--font-interface);
 }
 
-.memento-settings-danger-heading {
-  color: var(--text-error) !important;
+body .memento-settings-danger-heading {
+  color: var(--text-error);
 }
 
 .memento-settings-empty {
