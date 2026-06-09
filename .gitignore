@@ -1,0 +1,5 @@
+node_modules/
+dist/
+.obsidian/
+.DS_Store
+*.log
