@@ -241,6 +241,9 @@ export class CalendarDecorator {
     const eventDates = getEventDatesSet(
       this.plugin.settings.events,
       730, // 2 years lookahead for calendar highlights
+      this.plugin.settings.externalEventsCache,
+      this.plugin.settings.externalCalendarSources,
+      this.plugin.settings.hiddenExternalEventIds,
     );
 
     for (const leaf of calendarLeaves) {

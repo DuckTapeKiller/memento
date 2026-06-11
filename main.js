@@ -28,11 +28,23 @@ __export(main_exports, {
   default: () => MementoPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian5 = require("obsidian");
+var import_obsidian6 = require("obsidian");
 
 // src/types.ts
+var DEFAULT_TIMELINE_FILTERS = {
+  search: "",
+  source: "all",
+  sourceId: "",
+  dateRange: "upcoming",
+  includeCompleted: false,
+  includeArchived: false
+};
 var DEFAULT_SETTINGS = {
   events: [],
+  externalCalendarSources: [],
+  externalEventsCache: [],
+  hiddenExternalEventIds: [],
+  timelineFilters: DEFAULT_TIMELINE_FILTERS,
   timelineViewMode: "all",
   showPastEventsInSettings: false,
   eventNoteFolder: "",
@@ -68,14 +80,38 @@ function formatDateDisplay(dateStr) {
 function formatTimeDisplay(time) {
   if (!time) return "";
   const [h, m] = time.split(":").map(Number);
-  if (h === void 0 || m === void 0) return time;
+  if (h === void 0 || m === void 0 || Number.isNaN(h) || Number.isNaN(m))
+    return time;
   const ampm = h >= 12 ? "PM" : "AM";
   const hour12 = h % 12 || 12;
   return `${hour12}:${m.toString().padStart(2, "0")} ${ampm}`;
 }
 function getTodayStr() {
-  const d = /* @__PURE__ */ new Date();
-  return `${d.getFullYear()}-${(d.getMonth() + 1).toString().padStart(2, "0")}-${d.getDate().toString().padStart(2, "0")}`;
+  return dateToStr(/* @__PURE__ */ new Date());
+}
+function normalizeEvent(event) {
+  return {
+    ...event,
+    recurrence: event.recurrence || "none",
+    recurrenceInterval: Math.max(1, event.recurrenceInterval || 1),
+    status: event.status || "active",
+    notePaths: event.notePaths || {},
+    updatedAt: event.updatedAt || event.createdAt
+  };
+}
+function getRecurrenceLabel(event) {
+  if (event.recurrence === "none") return RECURRENCE_LABELS.none;
+  const interval = Math.max(1, event.recurrenceInterval || 1);
+  const unitLabels = {
+    daily: "day",
+    weekly: "week",
+    monthly: "month",
+    yearly: "year"
+  };
+  const base = interval === 1 ? RECURRENCE_LABELS[event.recurrence] : `Every ${interval} ${unitLabels[event.recurrence]}${interval > 1 ? "s" : ""}`;
+  if (event.recurrenceEndDate) return `${base} until ${event.recurrenceEndDate}`;
+  if (event.recurrenceCount) return `${base} (${event.recurrenceCount} times)`;
+  return base;
 }
 function getRecurrenceOccurrences(event, startRange, endRange) {
   if (event.recurrence === "none") {
@@ -88,41 +124,52 @@ function getRecurrenceOccurrences(event, startRange, endRange) {
   const eventDate = /* @__PURE__ */ new Date(event.date + "T00:00:00");
   const rangeStart = /* @__PURE__ */ new Date(startRange + "T00:00:00");
   const rangeEnd = /* @__PURE__ */ new Date(endRange + "T00:00:00");
+  const recurrenceEnd = event.recurrenceEndDate ? /* @__PURE__ */ new Date(event.recurrenceEndDate + "T00:00:00") : null;
+  const interval = Math.max(1, event.recurrenceInterval || 1);
   let current = new Date(eventDate);
+  let generatedCount = 0;
   while (current < rangeStart) {
-    current = advanceDate(current, event.recurrence, eventDate);
+    generatedCount++;
+    if (event.recurrenceCount && generatedCount >= event.recurrenceCount) {
+      return [];
+    }
+    current = advanceDate(current, event.recurrence, eventDate, interval);
   }
-  const maxIterations = 366;
+  const maxIterations = 1500;
   let iterations = 0;
   while (current <= rangeEnd && iterations < maxIterations) {
-    const dateStr = dateToStr(current);
-    occurrences.push(dateStr);
-    current = advanceDate(current, event.recurrence, eventDate);
+    if (recurrenceEnd && current > recurrenceEnd) break;
+    generatedCount++;
+    if (!event.recurrenceCount || generatedCount <= event.recurrenceCount) {
+      occurrences.push(dateToStr(current));
+    }
+    if (event.recurrenceCount && generatedCount >= event.recurrenceCount) break;
+    current = advanceDate(current, event.recurrence, eventDate, interval);
     iterations++;
   }
   return occurrences;
 }
-function advanceDate(current, recurrence, originalDate) {
+function advanceDate(current, recurrence, originalDate, interval) {
   const next = new Date(current);
   switch (recurrence) {
     case "daily":
-      next.setDate(next.getDate() + 1);
+      next.setDate(next.getDate() + interval);
       break;
     case "weekly":
-      next.setDate(next.getDate() + 7);
+      next.setDate(next.getDate() + 7 * interval);
       break;
     case "monthly": {
       const origDay = originalDate.getDate();
-      next.setMonth(next.getMonth() + 1);
+      next.setMonth(next.getMonth() + interval);
       if (next.getDate() !== origDay) {
         next.setDate(0);
       }
       break;
     }
     case "yearly": {
-      next.setFullYear(next.getFullYear() + 1);
-      const origDay2 = originalDate.getDate();
-      if (next.getDate() !== origDay2) {
+      const origDay = originalDate.getDate();
+      next.setFullYear(next.getFullYear() + interval);
+      if (next.getDate() !== origDay) {
         next.setDate(0);
       }
       break;
@@ -136,48 +183,96 @@ function advanceDate(current, recurrence, originalDate) {
 function dateToStr(d) {
   return `${d.getFullYear()}-${(d.getMonth() + 1).toString().padStart(2, "0")}-${d.getDate().toString().padStart(2, "0")}`;
 }
-function getTimelineEntries(events, viewMode) {
+function addDays(dateStr, days) {
+  const d = /* @__PURE__ */ new Date(dateStr + "T00:00:00");
+  d.setDate(d.getDate() + days);
+  return dateToStr(d);
+}
+function getTimelineRange(viewMode, filters = DEFAULT_TIMELINE_FILTERS) {
   const today = getTodayStr();
-  let startDateStr = today;
-  let endDateStr;
-  if (viewMode === "month") {
+  const startDate = filters.dateRange === "all" ? "0000-01-01" : today;
+  let endDate;
+  if (filters.dateRange === "week") {
+    endDate = addDays(today, 7);
+  } else if (filters.dateRange === "month" || viewMode === "month") {
     const d = /* @__PURE__ */ new Date();
-    d.setDate(1);
-    const monthStartStr = dateToStr(d);
-    startDateStr = today > monthStartStr ? today : monthStartStr;
     d.setMonth(d.getMonth() + 1);
-    d.setDate(0);
-    endDateStr = dateToStr(d);
+    endDate = dateToStr(d);
   } else {
     const d = /* @__PURE__ */ new Date();
     d.setFullYear(d.getFullYear() + 2);
-    endDateStr = dateToStr(d);
+    endDate = dateToStr(d);
   }
+  return { startDate, endDate };
+}
+function getTimelineEntries(events, viewMode, externalEvents = [], filters = DEFAULT_TIMELINE_FILTERS, externalSources = [], hiddenExternalEventIds = []) {
+  const { startDate, endDate } = getTimelineRange(viewMode, filters);
   const entries = [];
-  for (const event of events) {
-    if (event.recurrence === "none") {
-      if (event.date >= startDateStr && (viewMode === "all" || event.date <= endDateStr)) {
-        entries.push({ event, occurrenceDate: event.date });
-      }
-    } else {
-      const occurrences = getRecurrenceOccurrences(
+  for (const rawEvent of events) {
+    const event = normalizeEvent(rawEvent);
+    if (!shouldShowManualEvent(event, filters)) continue;
+    const occurrences = getRecurrenceOccurrences(event, startDate, endDate);
+    for (const date of occurrences) {
+      entries.push({
+        id: `${event.id}:${date}`,
+        sourceType: "memento",
+        sourceId: "memento",
+        sourceName: "Memento",
         event,
-        startDateStr,
-        endDateStr
-      );
-      for (const date of occurrences) {
-        entries.push({ event, occurrenceDate: date });
-      }
+        occurrenceDate: date,
+        occurrenceTime: event.time,
+        editable: true
+      });
+    }
+  }
+  const enabledSourceIds = new Set(
+    externalSources.filter((source) => source.enabled).map((source) => source.id)
+  );
+  for (const event of externalEvents) {
+    if (hiddenExternalEventIds.includes(event.id)) continue;
+    if (!enabledSourceIds.has(event.sourceId)) continue;
+    if (!shouldShowExternalEvent(event, filters)) continue;
+    const source = externalSources.find((item) => item.id === event.sourceId);
+    const occurrences = getRecurrenceOccurrences(event, startDate, endDate);
+    for (const date of occurrences) {
+      entries.push({
+        id: `${event.id}:${date}`,
+        sourceType: "external",
+        sourceId: event.sourceId,
+        sourceName: source?.name || "External calendar",
+        event,
+        occurrenceDate: date,
+        occurrenceTime: event.time,
+        editable: false
+      });
     }
   }
   entries.sort((a, b) => {
     const dateCmp = a.occurrenceDate.localeCompare(b.occurrenceDate);
     if (dateCmp !== 0) return dateCmp;
-    return a.event.time.localeCompare(b.event.time);
+    return a.occurrenceTime.localeCompare(b.occurrenceTime);
   });
   return entries;
 }
-function getEventDatesSet(events, lookaheadDays) {
+function shouldShowManualEvent(event, filters) {
+  if (filters.source === "external") return false;
+  if (filters.sourceId && filters.sourceId !== "memento") return false;
+  if (event.status === "completed" && !filters.includeCompleted) return false;
+  if (event.status === "archived" && !filters.includeArchived) return false;
+  return matchesSearch(event, filters.search);
+}
+function shouldShowExternalEvent(event, filters) {
+  if (filters.source === "memento") return false;
+  if (filters.sourceId && filters.sourceId !== event.sourceId) return false;
+  return matchesSearch(event, filters.search);
+}
+function matchesSearch(event, query) {
+  const trimmed = query.trim().toLowerCase();
+  if (!trimmed) return true;
+  const haystack = `${event.title} ${event.context} ${event.location || ""}`.toLowerCase();
+  return haystack.includes(trimmed);
+}
+function getEventDatesSet(events, lookaheadDays, externalEvents = [], externalSources = [], hiddenExternalEventIds = []) {
   const endDate = /* @__PURE__ */ new Date();
   endDate.setDate(endDate.getDate() + lookaheadDays);
   const endStr = dateToStr(endDate);
@@ -186,7 +281,20 @@ function getEventDatesSet(events, lookaheadDays) {
   startDate.setMonth(startDate.getMonth() - 1);
   const startStr = dateToStr(startDate);
   const dates = /* @__PURE__ */ new Set();
-  for (const event of events) {
+  const enabledSourceIds = new Set(
+    externalSources.filter((source) => source.enabled).map((source) => source.id)
+  );
+  for (const rawEvent of events) {
+    const event = normalizeEvent(rawEvent);
+    if (event.status === "archived" || event.status === "completed") continue;
+    const occurrences = getRecurrenceOccurrences(event, startStr, endStr);
+    for (const date of occurrences) {
+      dates.add(date);
+    }
+  }
+  for (const event of externalEvents) {
+    if (hiddenExternalEventIds.includes(event.id)) continue;
+    if (!enabledSourceIds.has(event.sourceId)) continue;
     const occurrences = getRecurrenceOccurrences(event, startStr, endStr);
     for (const date of occurrences) {
       dates.add(date);
@@ -212,7 +320,11 @@ var EventModal = class extends import_obsidian.Modal {
         title: "",
         context: "",
         recurrence: "none",
-        createdAt: (/* @__PURE__ */ new Date()).toISOString()
+        recurrenceInterval: 1,
+        status: "active",
+        notePaths: {},
+        createdAt: (/* @__PURE__ */ new Date()).toISOString(),
+        updatedAt: (/* @__PURE__ */ new Date()).toISOString()
       };
     }
   }
@@ -257,6 +369,14 @@ var EventModal = class extends import_obsidian.Modal {
       text.onChange((value) => {
         this.event.date = value;
         updateDateBadge();
+      });
+      text.inputEl.addClass("memento-date-input");
+    });
+    new import_obsidian.Setting(form).setName("End date").setDesc("Optional end date for longer events").addText((text) => {
+      text.inputEl.type = "date";
+      text.setValue(this.event.endDate || "");
+      text.onChange((value) => {
+        this.event.endDate = value || void 0;
       });
       text.inputEl.addClass("memento-date-input");
     });
@@ -322,6 +442,67 @@ var EventModal = class extends import_obsidian.Modal {
         this.event.time = `${h}:${m}`;
       }
     };
+    let currentEndHour = "--";
+    let currentEndMin = "--";
+    if (this.event.endTime) {
+      const [h, m] = this.event.endTime.split(":");
+      currentEndHour = h;
+      currentEndMin = m;
+    }
+    const endTimeSetting = new import_obsidian.Setting(form).setName("End time").setDesc("Optional end time");
+    endTimeSetting.addText((text) => {
+      text.inputEl.type = "number";
+      text.inputEl.min = "0";
+      text.inputEl.max = "23";
+      text.inputEl.placeholder = "HH";
+      text.inputEl.setCssStyles({ width: "4rem", textAlign: "center" });
+      text.setValue(currentEndHour !== "--" ? currentEndHour : "");
+      text.onChange((value) => {
+        let val = parseInt(value, 10);
+        if (isNaN(val)) {
+          currentEndHour = "--";
+        } else {
+          if (val < 0) val = 0;
+          if (val > 23) val = 23;
+          currentEndHour = val.toString().padStart(2, "0");
+          text.setValue(currentEndHour);
+        }
+        updateEndTime();
+      });
+    });
+    endTimeSetting.controlEl.createSpan({
+      text: " : ",
+      cls: "memento-time-separator"
+    }).setCssStyles({ margin: "0 0.2rem", fontWeight: "bold" });
+    endTimeSetting.addText((text) => {
+      text.inputEl.type = "number";
+      text.inputEl.min = "0";
+      text.inputEl.max = "59";
+      text.inputEl.placeholder = "MM";
+      text.inputEl.setCssStyles({ width: "4rem", textAlign: "center" });
+      text.setValue(currentEndMin !== "--" ? currentEndMin : "");
+      text.onChange((value) => {
+        let val = parseInt(value, 10);
+        if (isNaN(val)) {
+          currentEndMin = "--";
+        } else {
+          if (val < 0) val = 0;
+          if (val > 59) val = 59;
+          currentEndMin = val.toString().padStart(2, "0");
+          text.setValue(currentEndMin);
+        }
+        updateEndTime();
+      });
+    });
+    const updateEndTime = () => {
+      if (currentEndHour === "--" && currentEndMin === "--") {
+        this.event.endTime = "";
+      } else {
+        const h = currentEndHour === "--" ? "12" : currentEndHour;
+        const m = currentEndMin === "--" ? "00" : currentEndMin;
+        this.event.endTime = `${h}:${m}`;
+      }
+    };
     let titleInput;
     new import_obsidian.Setting(form).setName("Title").setDesc("Give your event a name").addText((text) => {
       text.setPlaceholder("e.g. Team standup, Dentist appointment...");
@@ -348,6 +529,36 @@ var EventModal = class extends import_obsidian.Modal {
       dropdown.setValue(this.event.recurrence || "none");
       dropdown.onChange((value) => {
         this.event.recurrence = value;
+      });
+    });
+    new import_obsidian.Setting(form).setName("Repeat interval").setDesc("Use 1 for every day/week/month/year, 2 for every other, etc.").addText((text) => {
+      text.inputEl.type = "number";
+      text.inputEl.min = "1";
+      text.setValue((this.event.recurrenceInterval || 1).toString());
+      text.onChange((value) => {
+        const parsed = parseInt(value, 10);
+        this.event.recurrenceInterval = Number.isNaN(parsed) || parsed < 1 ? 1 : parsed;
+      });
+    });
+    new import_obsidian.Setting(form).setName("Repeat until").setDesc("Optional recurrence end date").addText((text) => {
+      text.inputEl.type = "date";
+      text.setValue(this.event.recurrenceEndDate || "");
+      text.onChange((value) => {
+        this.event.recurrenceEndDate = value || void 0;
+      });
+    });
+    new import_obsidian.Setting(form).setName("Repeat count").setDesc("Optional maximum number of occurrences").addText((text) => {
+      text.inputEl.type = "number";
+      text.inputEl.min = "1";
+      text.setValue(this.event.recurrenceCount?.toString() || "");
+      text.onChange((value) => {
+        const parsed = parseInt(value, 10);
+        this.event.recurrenceCount = Number.isNaN(parsed) || parsed < 1 ? void 0 : parsed;
+      });
+    });
+    new import_obsidian.Setting(form).setName("Status").setDesc("Completed and archived events are hidden unless enabled").addDropdown((dropdown) => {
+      dropdown.addOption("active", "Active").addOption("completed", "Completed").addOption("archived", "Archived").setValue(this.event.status || "active").onChange((value) => {
+        this.event.status = value;
       });
     });
     const buttonRow = contentEl.createDiv({ cls: "memento-button-row" });
@@ -381,10 +592,18 @@ var EventModal = class extends import_obsidian.Modal {
       id: this.event.id || generateId(),
       date: this.event.date || getTodayStr(),
       time: this.event.time || "",
+      endDate: this.event.endDate || void 0,
+      endTime: this.event.endTime || "",
       title: this.event.title.trim(),
       context: this.event.context?.trim() || "",
       recurrence: this.event.recurrence || "none",
-      createdAt: this.event.createdAt || (/* @__PURE__ */ new Date()).toISOString()
+      recurrenceInterval: Math.max(1, this.event.recurrenceInterval || 1),
+      recurrenceEndDate: this.event.recurrenceEndDate || void 0,
+      recurrenceCount: this.event.recurrenceCount,
+      status: this.event.status || "active",
+      notePaths: this.event.notePaths || {},
+      createdAt: this.event.createdAt || (/* @__PURE__ */ new Date()).toISOString(),
+      updatedAt: (/* @__PURE__ */ new Date()).toISOString()
     };
     this.onSubmit(fullEvent);
     this.close();
@@ -430,9 +649,115 @@ var ConfirmModal = class extends import_obsidian2.Modal {
     this.contentEl.empty();
   }
 };
+var EventActionModal = class extends import_obsidian2.Modal {
+  constructor(app, entry, noteExists, actions) {
+    super(app);
+    this.entry = entry;
+    this.noteExists = noteExists;
+    this.actions = actions;
+  }
+  onOpen() {
+    const { contentEl } = this;
+    const event = this.entry.event;
+    contentEl.addClass("memento-action-modal");
+    contentEl.createEl("h2", { text: event.title });
+    contentEl.createEl("p", {
+      text: `${formatDateDisplay(this.entry.occurrenceDate)}${this.entry.occurrenceTime ? ` at ${formatTimeDisplay(this.entry.occurrenceTime)}` : ""}`,
+      cls: "setting-item-description"
+    });
+    contentEl.createEl("p", {
+      text: this.entry.sourceName,
+      cls: "memento-action-source"
+    });
+    if (event.context) {
+      contentEl.createEl("p", { text: event.context });
+    }
+    if (isExternalEvent(event) && event.location) {
+      contentEl.createEl("p", { text: event.location, cls: "setting-item-description" });
+    }
+    const setting = new import_obsidian2.Setting(contentEl).addButton(
+      (btn) => btn.setButtonText("Cancel").onClick(() => {
+        this.close();
+      })
+    );
+    if (this.entry.editable) {
+      setting.addButton(
+        (btn) => btn.setButtonText("Edit Event").onClick(() => {
+          this.close();
+          this.actions.edit();
+        })
+      ).addButton(
+        (btn) => btn.setButtonText("Duplicate").onClick(() => {
+          this.close();
+          this.actions.duplicate();
+        })
+      ).addButton(
+        (btn) => btn.setButtonText("Complete").onClick(() => {
+          this.close();
+          this.actions.complete();
+        })
+      ).addButton(
+        (btn) => btn.setButtonText("Archive").onClick(() => {
+          this.close();
+          this.actions.archive();
+        })
+      );
+    } else {
+      setting.addButton(
+        (btn) => btn.setButtonText("Import").onClick(() => {
+          this.close();
+          this.actions.importExternal();
+        })
+      ).addButton(
+        (btn) => btn.setButtonText("Hide").onClick(() => {
+          this.close();
+          this.actions.hideExternal();
+        })
+      );
+    }
+    setting.addButton(
+      (btn) => btn.setButtonText("Copy").onClick(() => {
+        this.actions.copyDetails();
+      })
+    ).addButton((btn) => {
+      btn.setButtonText(this.noteExists ? "Open Note" : "Create Note").setCta().onClick(() => {
+        this.close();
+        this.actions.openNote();
+      });
+    });
+    this.scope.register([], "e", () => {
+      if (!this.entry.editable) return false;
+      this.close();
+      this.actions.edit();
+      return false;
+    });
+    this.scope.register([], "n", () => {
+      this.close();
+      this.actions.openNote();
+      return false;
+    });
+    this.scope.register([], "d", () => {
+      if (!this.entry.editable) return false;
+      this.close();
+      this.actions.duplicate();
+      return false;
+    });
+    this.scope.register([], "a", () => {
+      if (!this.entry.editable) return false;
+      this.close();
+      this.actions.archive();
+      return false;
+    });
+  }
+  onClose() {
+    this.contentEl.empty();
+  }
+};
 var TimelineView = class extends import_obsidian2.ItemView {
   constructor(leaf, plugin) {
     super(leaf);
+    this.shouldRestoreSearchFocus = false;
+    this.searchCursorPosition = null;
     this.plugin = plugin;
   }
   getViewType() {
@@ -450,16 +775,18 @@ var TimelineView = class extends import_obsidian2.ItemView {
   async onClose() {
     this.contentEl.empty();
   }
-  /**
-   * Full re-render of the timeline
-   */
   render() {
     const { contentEl } = this;
     contentEl.empty();
     contentEl.addClass("memento-timeline-container");
+    this.renderFilters(contentEl);
     const entries = getTimelineEntries(
       this.plugin.settings.events,
-      this.plugin.settings.timelineViewMode
+      this.plugin.settings.timelineViewMode,
+      this.plugin.settings.externalEventsCache,
+      this.plugin.settings.timelineFilters,
+      this.plugin.settings.externalCalendarSources,
+      this.plugin.settings.hiddenExternalEventIds
     );
     if (entries.length === 0) {
       this.renderEmptyState(contentEl);
@@ -470,144 +797,279 @@ var TimelineView = class extends import_obsidian2.ItemView {
     });
     const ul = timelineWrapper.createEl("ul", { cls: "memento-timeline" });
     for (const entry of entries) {
-      const eventLi = ul.createEl("li", { cls: "memento-tl-event" });
-      eventLi.addEventListener("click", () => {
-        void (async () => {
-          const filePath = this.plugin.getEventNotePath(
-            entry.event,
-            entry.occurrenceDate
-          );
-          const fileExists = await this.plugin.app.vault.adapter.exists(filePath);
-          if (fileExists) {
-            await this.plugin.createNoteForEvent(
-              entry.event,
-              entry.occurrenceDate
-            );
-          } else {
-            new ConfirmModal(
-              this.plugin.app,
-              "Create Note",
-              `Do you want to create a new note for "${entry.event.title}"?`,
-              () => {
-                void this.plugin.createNoteForEvent(
-                  entry.event,
-                  entry.occurrenceDate
-                );
-              },
-              "Create Note",
-              false
-            ).open();
+      this.renderEntry(ul, entry);
+    }
+  }
+  renderFilters(container) {
+    const filters = this.plugin.settings.timelineFilters;
+    const controls = container.createDiv({ cls: "memento-timeline-controls" });
+    const headerRow = controls.createDiv({ cls: "memento-search-header" });
+    headerRow.createSpan({ cls: "memento-filters-label", text: "Filters" });
+    const searchButton = headerRow.createEl("button", {
+      cls: "memento-search-button",
+      attr: { type: "button" }
+    });
+    const filtersBody = controls.createDiv({ cls: "memento-filters-body" });
+    const searchArea = filtersBody.createDiv({ cls: "memento-search-area" });
+    const searchInput = searchArea.createEl("input", {
+      type: "search",
+      placeholder: "Search events",
+      cls: "memento-search-input"
+    });
+    searchInput.value = filters.search;
+    const clearButton = searchArea.createEl("button", {
+      cls: "memento-search-clear",
+      attr: { type: "button", "aria-label": "Clear search" }
+    });
+    clearButton.textContent = "\xD7";
+    const filtersGroup = filtersBody.createDiv({ cls: "memento-filters-group" });
+    const hasActiveFilters = filters.search.trim().length > 0 || filters.source !== "all" || filters.sourceId !== "" || filters.dateRange !== "upcoming" || filters.includeCompleted || filters.includeArchived;
+    const applyVisibility = (visible, options = {}) => {
+      filtersBody.toggleClass("is-visible", visible);
+      searchButton.toggleClass("is-active", visible);
+      searchButton.textContent = visible ? "Hide filters" : "Show filters";
+      if (!visible) {
+        searchInput.blur();
+        this.shouldRestoreSearchFocus = false;
+        this.searchCursorPosition = null;
+      } else if (options.focus) {
+        window.setTimeout(() => {
+          searchInput.focus({ preventScroll: true });
+          if (this.searchCursorPosition !== null) {
+            const pos = this.searchCursorPosition;
+            searchInput.setSelectionRange(pos, pos);
           }
-        })();
+          this.shouldRestoreSearchFocus = false;
+          this.searchCursorPosition = null;
+        }, 0);
+      }
+    };
+    applyVisibility(hasActiveFilters, {
+      focus: this.shouldRestoreSearchFocus
+    });
+    searchButton.addEventListener("click", () => {
+      const shouldShow = !filtersBody.hasClass("is-visible");
+      applyVisibility(shouldShow, { focus: shouldShow });
+    });
+    searchInput.addEventListener("input", (event) => {
+      const target = event.target;
+      filters.search = target.value;
+      this.shouldRestoreSearchFocus = true;
+      this.searchCursorPosition = target.selectionStart ?? target.value.length;
+      void this.plugin.saveSettings();
+    });
+    clearButton.addEventListener("click", () => {
+      if (searchInput.value.length > 0) {
+        searchInput.value = "";
+        filters.search = "";
+        this.shouldRestoreSearchFocus = true;
+        this.searchCursorPosition = 0;
+        void this.plugin.saveSettings();
+      } else {
+        applyVisibility(false);
+      }
+    });
+    new import_obsidian2.Setting(filtersGroup).setName("Source").addDropdown((dropdown) => {
+      dropdown.addOption("all", "All sources").addOption("memento", "Memento only").addOption("external", "External only").setValue(filters.source).onChange((value) => {
+        filters.source = value;
+        filters.sourceId = "";
+        this.shouldRestoreSearchFocus = true;
+        this.searchCursorPosition = null;
+        void this.plugin.saveSettings();
       });
-      const deleteBtn = eventLi.createDiv({ cls: "memento-tl-delete-btn" });
-      (0, import_obsidian2.setIcon)(deleteBtn, "trash-2");
-      deleteBtn.addEventListener("click", (e) => {
-        e.stopPropagation();
+    });
+    new import_obsidian2.Setting(filtersGroup).setName("Calendar").addDropdown((dropdown) => {
+      dropdown.addOption("", "Any calendar");
+      dropdown.addOption("memento", "Memento");
+      for (const source of this.plugin.settings.externalCalendarSources) {
+        dropdown.addOption(source.id, source.name);
+      }
+      dropdown.setValue(filters.sourceId);
+      dropdown.onChange((value) => {
+        filters.sourceId = value;
+        this.shouldRestoreSearchFocus = true;
+        this.searchCursorPosition = null;
+        void this.plugin.saveSettings();
+      });
+    });
+    new import_obsidian2.Setting(filtersGroup).setName("Date range").addDropdown(
+      (dropdown) => dropdown.addOption("upcoming", "Upcoming").addOption("week", "Next 7 days").addOption("month", "Next month").addOption("all", "All").setValue(filters.dateRange).onChange((value) => {
+        filters.dateRange = value;
+        this.shouldRestoreSearchFocus = true;
+        this.searchCursorPosition = null;
+        void this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian2.Setting(filtersGroup).setName("Show completed").addToggle(
+      (toggle) => toggle.setValue(filters.includeCompleted).onChange((value) => {
+        filters.includeCompleted = value;
+        this.shouldRestoreSearchFocus = true;
+        this.searchCursorPosition = null;
+        void this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian2.Setting(filtersGroup).setName("Show archived").addToggle(
+      (toggle) => toggle.setValue(filters.includeArchived).onChange((value) => {
+        filters.includeArchived = value;
+        this.shouldRestoreSearchFocus = true;
+        this.searchCursorPosition = null;
+        void this.plugin.saveSettings();
+      })
+    );
+  }
+  renderEntry(ul, entry) {
+    const eventLi = ul.createEl("li", {
+      cls: `memento-tl-event memento-tl-${entry.sourceType}`
+    });
+    eventLi.addEventListener("click", () => {
+      void this.openEntryActions(entry);
+    });
+    const quickBtn = eventLi.createDiv({ cls: "memento-tl-delete-btn" });
+    (0, import_obsidian2.setIcon)(quickBtn, entry.editable ? "trash-2" : "eye-off");
+    quickBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (entry.editable) {
         new ConfirmModal(
           this.plugin.app,
           "Delete Event",
           "Are you sure you want to permanently delete this event?",
           () => {
-            void (async () => {
-              this.plugin.settings.events = this.plugin.settings.events.filter(
-                (ev) => ev.id !== entry.event.id
-              );
-              await this.plugin.saveSettings();
-              this.render();
-            })();
+            this.plugin.deleteEvent(entry.event.id);
           },
           "Delete",
           true
         ).open();
+      } else {
+        this.plugin.hideExternalEvent(entry.event.id);
+      }
+    });
+    const contentDiv = eventLi.createDiv({ cls: "memento-tl-content" });
+    const dateDiv = contentDiv.createDiv({ cls: "memento-tl-date" });
+    dateDiv.createSpan({
+      text: formatDateDisplay(entry.occurrenceDate),
+      cls: "memento-tl-date-text main-date"
+    });
+    const metaDiv = contentDiv.createDiv({ cls: "memento-tl-time" });
+    if (entry.occurrenceTime) {
+      metaDiv.createSpan({
+        text: formatTimeDisplay(entry.occurrenceTime),
+        cls: "memento-tl-time-text"
       });
-      const contentDiv = eventLi.createDiv({ cls: "memento-tl-content" });
-      const dateDiv = contentDiv.createDiv({ cls: "memento-tl-date" });
-      const dateLabel = formatDateDisplay(entry.occurrenceDate);
-      dateDiv.createSpan({
-        text: dateLabel,
-        cls: "memento-tl-date-text main-date"
+    }
+    if (entry.event.recurrence !== "none") {
+      metaDiv.createSpan({
+        text: getRecurrenceLabel(entry.event),
+        cls: "memento-tl-recurrence-badge"
       });
-      if (entry.event.time) {
-        const timeDiv = contentDiv.createDiv({ cls: "memento-tl-time" });
-        timeDiv.createSpan({
-          text: formatTimeDisplay(entry.event.time),
-          cls: "memento-tl-time-text"
-        });
-        if (entry.event.recurrence !== "none") {
-          timeDiv.createSpan({
-            text: RECURRENCE_LABELS[entry.event.recurrence],
-            cls: "memento-tl-recurrence-badge"
-          });
-        }
-      } else if (entry.event.recurrence !== "none") {
-        const timeDiv = contentDiv.createDiv({ cls: "memento-tl-time" });
-        timeDiv.createSpan({
-          text: RECURRENCE_LABELS[entry.event.recurrence],
-          cls: "memento-tl-recurrence-badge"
-        });
-      }
-      const today = /* @__PURE__ */ new Date();
-      const todayStr = `${today.getFullYear()}-${(today.getMonth() + 1).toString().padStart(2, "0")}-${today.getDate().toString().padStart(2, "0")}`;
-      const eventDate = /* @__PURE__ */ new Date(entry.occurrenceDate + "T00:00:00");
-      const diffTime = eventDate.getTime() - (/* @__PURE__ */ new Date(todayStr + "T00:00:00")).getTime();
-      const diffDays = Math.round(diffTime / (1e3 * 60 * 60 * 24));
-      let remainingText = "";
-      if (diffDays === 0) {
-        remainingText = "(Today)";
-      } else if (diffDays === 1) {
-        remainingText = "(Tomorrow)";
-      } else if (diffDays > 1) {
-        remainingText = `(${diffDays} days remaining)`;
-      } else if (diffDays < 0) {
-        remainingText = `(${-diffDays} days ago)`;
-      }
-      if (remainingText) {
-        const remainingDiv = contentDiv.createDiv({
-          cls: "memento-tl-remaining"
-        });
-        remainingDiv.createEl("em", { text: remainingText });
-      }
-      const titleDiv = contentDiv.createDiv({ cls: "memento-tl-title" });
-      titleDiv.createSpan({
-        text: entry.event.title,
-        cls: "memento-tl-title-text"
-      });
-      if (entry.event.context) {
-        const contextDiv = contentDiv.createDiv({ cls: "memento-tl-context" });
-        contextDiv.createEl("p", { text: entry.event.context });
-      }
+    }
+    metaDiv.createSpan({
+      text: entry.sourceName,
+      cls: `memento-tl-source-badge memento-tl-source-${entry.sourceType}`
+    });
+    this.renderRemaining(contentDiv, entry.occurrenceDate);
+    const titleDiv = contentDiv.createDiv({ cls: "memento-tl-title" });
+    titleDiv.createSpan({
+      text: entry.event.title,
+      cls: "memento-tl-title-text"
+    });
+    if (entry.event.context) {
+      const contextDiv = contentDiv.createDiv({ cls: "memento-tl-context" });
+      contextDiv.createEl("p", { text: entry.event.context });
+    }
+    if (isExternalEvent(entry.event) && entry.event.location) {
+      const locationDiv = contentDiv.createDiv({ cls: "memento-tl-context" });
+      locationDiv.createEl("p", { text: entry.event.location });
     }
   }
-  /**
-   * Render empty state when no events exist
-   */
+  renderRemaining(container, occurrenceDate) {
+    const today = /* @__PURE__ */ new Date();
+    const todayStr = `${today.getFullYear()}-${(today.getMonth() + 1).toString().padStart(2, "0")}-${today.getDate().toString().padStart(2, "0")}`;
+    const eventDate = /* @__PURE__ */ new Date(occurrenceDate + "T00:00:00");
+    const diffTime = eventDate.getTime() - (/* @__PURE__ */ new Date(todayStr + "T00:00:00")).getTime();
+    const diffDays = Math.round(diffTime / (1e3 * 60 * 60 * 24));
+    let remainingText = "";
+    if (diffDays === 0) {
+      remainingText = "(Today)";
+    } else if (diffDays === 1) {
+      remainingText = "(Tomorrow)";
+    } else if (diffDays > 1) {
+      remainingText = `(${diffDays} days remaining)`;
+    } else if (diffDays < 0) {
+      remainingText = `(${-diffDays} days ago)`;
+    }
+    if (remainingText) {
+      const remainingDiv = container.createDiv({
+        cls: "memento-tl-remaining"
+      });
+      remainingDiv.createEl("em", { text: remainingText });
+    }
+  }
+  async openEntryActions(entry) {
+    const filePath = this.plugin.getEventNotePath(entry.event, entry.occurrenceDate);
+    const fileExists = await this.plugin.app.vault.adapter.exists(filePath);
+    new EventActionModal(this.plugin.app, entry, fileExists, {
+      edit: () => {
+        if (isMementoEvent(entry.event)) this.openEditEventModal(entry.event);
+      },
+      openNote: () => {
+        void this.plugin.createNoteForEvent(entry.event, entry.occurrenceDate);
+      },
+      duplicate: () => {
+        if (isMementoEvent(entry.event)) this.plugin.duplicateEvent(entry.event);
+      },
+      complete: () => {
+        if (isMementoEvent(entry.event)) this.plugin.setEventStatus(entry.event.id, "completed");
+      },
+      archive: () => {
+        if (isMementoEvent(entry.event)) this.plugin.setEventStatus(entry.event.id, "archived");
+      },
+      deleteEvent: () => {
+        this.plugin.deleteEvent(entry.event.id);
+      },
+      importExternal: () => {
+        if (isExternalEvent(entry.event))
+          this.plugin.importExternalEvent(entry.event, entry.occurrenceDate);
+      },
+      hideExternal: () => {
+        this.plugin.hideExternalEvent(entry.event.id);
+      },
+      copyDetails: () => {
+        const lines = [
+          entry.event.title,
+          formatDateDisplay(entry.occurrenceDate),
+          entry.occurrenceTime ? formatTimeDisplay(entry.occurrenceTime) : "",
+          entry.event.context
+        ].filter(Boolean);
+        void navigator.clipboard.writeText(lines.join("\n"));
+      }
+    }).open();
+  }
   renderEmptyState(container) {
     const empty = container.createDiv({ cls: "memento-empty-state" });
     const iconDiv = empty.createDiv({ cls: "memento-empty-icon" });
     (0, import_obsidian2.setIcon)(iconDiv, "calendar-days");
-    empty.createEl("h3", { text: "No upcoming events" });
+    empty.createEl("h3", { text: "No events found" });
     empty.createEl("p", {
-      text: "Right-click a day in the calendar or use the command palette to create your first event.",
+      text: "Create a Memento event, adjust filters, or add an external ICS calendar in settings.",
       cls: "memento-empty-desc"
     });
   }
-  /**
-   * Group timeline entries by date
-   */
-  groupByDate(entries) {
-    const map = /* @__PURE__ */ new Map();
-    for (const entry of entries) {
-      const existing = map.get(entry.occurrenceDate);
-      if (existing) {
-        existing.push(entry);
-      } else {
-        map.set(entry.occurrenceDate, [entry]);
-      }
-    }
-    return map;
+  openEditEventModal(event) {
+    new EventModal(
+      this.plugin.app,
+      (updatedEvent) => {
+        this.plugin.updateEvent(updatedEvent);
+      },
+      event
+    ).open();
   }
 };
+function isExternalEvent(event) {
+  return "externalUid" in event;
+}
+function isMementoEvent(event) {
+  return !isExternalEvent(event);
+}
 
 // src/CalendarDecorator.ts
 var import_obsidian3 = require("obsidian");
@@ -784,8 +1246,11 @@ var CalendarDecorator = class {
     if (calendarLeaves.length === 0) return;
     const eventDates = getEventDatesSet(
       this.plugin.settings.events,
-      730
+      730,
       // 2 years lookahead for calendar highlights
+      this.plugin.settings.externalEventsCache,
+      this.plugin.settings.externalCalendarSources,
+      this.plugin.settings.hiddenExternalEventIds
     );
     for (const leaf of calendarLeaves) {
       this.decorateLeaf(leaf, eventDates);
@@ -1079,6 +1544,13 @@ var EventSettingsTab = class extends import_obsidian4.PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
     containerEl.addClass("memento-settings");
+    this.renderTimelineSettings(containerEl);
+    this.renderExternalCalendars(containerEl);
+    this.renderDataManagement(containerEl);
+    this.renderEvents(containerEl);
+  }
+  renderTimelineSettings(containerEl) {
+    new import_obsidian4.Setting(containerEl).setName("Timeline").setHeading();
     new import_obsidian4.Setting(containerEl).setName("Timeline view mode").setDesc("Choose which events to show in the timeline view").addDropdown(
       (dropdown) => dropdown.addOption("all", "Show all upcoming events").addOption("month", "Show events for current month only").setValue(this.plugin.settings.timelineViewMode).onChange(async (value) => {
         this.plugin.settings.timelineViewMode = value;
@@ -1105,12 +1577,111 @@ var EventSettingsTab = class extends import_obsidian4.PluginSettingTab {
         await this.plugin.saveSettings();
       })
     );
-    const eventsHeading = new import_obsidian4.Setting(containerEl).setName("Events").setHeading();
-    eventsHeading.settingEl.addClass("memento-settings-events-heading");
+  }
+  renderExternalCalendars(containerEl) {
+    new import_obsidian4.Setting(containerEl).setName("External Calendars").setHeading();
+    let name = "";
+    let url = "";
+    let refreshIntervalMinutes = 60;
+    new import_obsidian4.Setting(containerEl).setName("Add ICS calendar").setDesc("Use a private Google Calendar ICS URL or shared iCloud ICS URL").addText(
+      (text) => text.setPlaceholder("Calendar name").onChange((value) => {
+        name = value.trim();
+      })
+    ).addText(
+      (text) => text.setPlaceholder("https://...ics").onChange((value) => {
+        url = value.trim();
+      })
+    ).addText((text) => {
+      text.inputEl.type = "number";
+      text.inputEl.min = "5";
+      text.setPlaceholder("Refresh minutes");
+      text.setValue(refreshIntervalMinutes.toString());
+      text.onChange((value) => {
+        const parsed = parseInt(value, 10);
+        refreshIntervalMinutes = Number.isNaN(parsed) ? 60 : Math.max(5, parsed);
+      });
+    }).addButton(
+      (button) => button.setButtonText("Add").setCta().onClick(() => {
+        if (!name || !url) {
+          new import_obsidian4.Notice("Calendar name and ICS URL are required.");
+          return;
+        }
+        this.plugin.addExternalCalendarSource({
+          name,
+          type: "ics",
+          url,
+          enabled: true,
+          refreshIntervalMinutes
+        });
+        this.render();
+      })
+    );
+    new import_obsidian4.Setting(containerEl).setName("Refresh external calendars").setDesc("Fetch all enabled ICS subscriptions now").addButton(
+      (button) => button.setButtonText("Refresh now").onClick(() => {
+        void this.plugin.syncExternalCalendars().then(() => this.render());
+      })
+    );
+    for (const source of this.plugin.settings.externalCalendarSources) {
+      this.renderExternalCalendarItem(containerEl, source);
+    }
+  }
+  renderExternalCalendarItem(containerEl, source) {
+    const sourceEvents = this.plugin.settings.externalEventsCache.filter(
+      (event) => event.sourceId === source.id
+    );
+    new import_obsidian4.Setting(containerEl).setName(source.name).setDesc(
+      `${sourceEvents.length} cached events${source.lastFetchedAt ? ` \xB7 Last sync ${source.lastFetchedAt}` : ""}${source.lastError ? ` \xB7 Error: ${source.lastError}` : ""}`
+    ).addToggle(
+      (toggle) => toggle.setValue(source.enabled).onChange((value) => {
+        this.plugin.updateExternalCalendarSource({ ...source, enabled: value });
+        this.render();
+      })
+    ).addButton(
+      (button) => button.setButtonText("Refresh").onClick(() => {
+        void this.plugin.syncExternalCalendars([source.id]).then(() => this.render());
+      })
+    ).addButton(
+      (button) => button.setButtonText("Remove").setWarning().onClick(() => {
+        this.plugin.deleteExternalCalendarSource(source.id);
+        this.render();
+      })
+    );
+  }
+  renderDataManagement(containerEl) {
+    new import_obsidian4.Setting(containerEl).setName("Data Management").setHeading();
+    new import_obsidian4.Setting(containerEl).setName("Export events").setDesc("Create a JSON backup file in the vault root").addButton(
+      (button) => button.setButtonText("Export JSON").onClick(() => {
+        void this.plugin.exportEventsToJson();
+      })
+    );
+    let importText = "";
+    new import_obsidian4.Setting(containerEl).setName("Import events").setDesc("Paste a Memento JSON export. Duplicate ids are regenerated.").addTextArea(
+      (text) => text.setPlaceholder("Paste JSON").onChange((value) => {
+        importText = value;
+      })
+    ).addButton(
+      (button) => button.setButtonText("Import JSON").onClick(() => {
+        try {
+          const count = this.plugin.importEventsFromJson(importText);
+          new import_obsidian4.Notice(`Imported ${count} events.`);
+          this.render();
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          new import_obsidian4.Notice(`Import failed: ${message}`);
+        }
+      })
+    );
+  }
+  renderEvents(containerEl) {
+    new import_obsidian4.Setting(containerEl).setName("Events").setHeading().settingEl.addClass("memento-settings-events-heading");
     new import_obsidian4.Setting(containerEl).setName("Create a new event").setDesc("Add a new event to your calendar").addButton(
       (button) => button.setButtonText("+ Add Event").setCta().onClick(() => {
         new EventModal(this.app, (event) => {
-          this.plugin.settings.events.push(event);
+          this.plugin.settings.events.push({
+            ...event,
+            id: event.id || generateId(),
+            updatedAt: (/* @__PURE__ */ new Date()).toISOString()
+          });
           void this.plugin.saveSettings().then(() => this.render());
         }).open();
       })
@@ -1119,7 +1690,7 @@ var EventSettingsTab = class extends import_obsidian4.PluginSettingTab {
     if (events.length === 0) {
       const emptyDiv = containerEl.createDiv({ cls: "memento-settings-empty" });
       emptyDiv.createEl("p", {
-        text: "No events yet. Create your first event above!",
+        text: "No events yet. Create your first event above.",
         cls: "setting-item-description"
       });
     } else {
@@ -1130,36 +1701,20 @@ var EventSettingsTab = class extends import_obsidian4.PluginSettingTab {
         this.renderEventItem(eventsContainer, event);
       }
     }
-    if (this.plugin.settings.events.length > 0) {
-      const dangerHeading = new import_obsidian4.Setting(containerEl).setName("Danger Zone").setHeading();
-      dangerHeading.settingEl.addClass("memento-settings-danger-heading");
-      new import_obsidian4.Setting(containerEl).setName("Delete all events").setDesc("Permanently remove all events. This cannot be undone.").addButton(
-        (button) => button.setButtonText("Delete All").setDestructive().onClick(() => {
-          this.plugin.settings.events = [];
-          void this.plugin.saveSettings().then(() => this.render());
-        })
-      );
-    }
   }
-  /**
-   * Get events filtered based on settings
-   */
   getFilteredEvents() {
     let events = [...this.plugin.settings.events];
     if (!this.plugin.settings.showPastEventsInSettings) {
-      const today = /* @__PURE__ */ new Date();
-      const todayStr = `${today.getFullYear()}-${(today.getMonth() + 1).toString().padStart(2, "0")}-${today.getDate().toString().padStart(2, "0")}`;
-      events = events.filter((e) => {
-        if (e.recurrence !== "none") return true;
-        return e.date >= todayStr;
+      const todayStr = getTodayStr();
+      events = events.filter((event) => {
+        if (event.status === "archived") return false;
+        if (event.recurrence !== "none") return true;
+        return event.date >= todayStr;
       });
     }
     events.sort((a, b) => a.date.localeCompare(b.date));
     return events;
   }
-  /**
-   * Render a single event item in the settings list
-   */
   renderEventItem(container, event) {
     const eventEl = container.createDiv({ cls: "memento-settings-event" });
     const infoEl = eventEl.createDiv({ cls: "memento-settings-event-info" });
@@ -1170,9 +1725,13 @@ var EventSettingsTab = class extends import_obsidian4.PluginSettingTab {
       text: event.title,
       cls: "memento-settings-event-title"
     });
+    titleRow.createSpan({
+      text: event.status || "active",
+      cls: "memento-settings-event-badge"
+    });
     if (event.recurrence !== "none") {
       titleRow.createSpan({
-        text: RECURRENCE_LABELS[event.recurrence],
+        text: getRecurrenceLabel(event),
         cls: "memento-settings-event-badge"
       });
     }
@@ -1197,42 +1756,233 @@ var EventSettingsTab = class extends import_obsidian4.PluginSettingTab {
     const actionsEl = eventEl.createDiv({
       cls: "memento-settings-event-actions"
     });
-    const editBtn = actionsEl.createEl("button", {
-      cls: "memento-settings-btn memento-settings-btn-edit",
-      attr: { "aria-label": "Edit event" }
-    });
-    (0, import_obsidian4.setIcon)(editBtn, "pencil");
-    editBtn.addEventListener("click", () => {
+    this.addIconButton(actionsEl, "pencil", "Edit event", () => {
       new EventModal(
         this.app,
         (updatedEvent) => {
-          const idx = this.plugin.settings.events.findIndex(
-            (e) => e.id === event.id
-          );
-          if (idx !== -1) {
-            this.plugin.settings.events[idx] = updatedEvent;
-            void this.plugin.saveSettings().then(() => this.render());
-          }
+          this.plugin.updateEvent(updatedEvent);
+          this.render();
         },
         event
       ).open();
     });
-    const deleteBtn = actionsEl.createEl("button", {
-      cls: "memento-settings-btn memento-settings-btn-delete",
-      attr: { "aria-label": "Delete event" }
+    this.addIconButton(actionsEl, "copy", "Duplicate event", () => {
+      this.plugin.duplicateEvent(event);
+      this.render();
     });
-    (0, import_obsidian4.setIcon)(deleteBtn, "trash-2");
-    deleteBtn.addEventListener("click", () => {
-      this.plugin.settings.events = this.plugin.settings.events.filter(
-        (e) => e.id !== event.id
-      );
-      void this.plugin.saveSettings().then(() => this.render());
+    this.addIconButton(actionsEl, "check", "Mark complete", () => {
+      this.plugin.setEventStatus(event.id, "completed");
+      this.render();
     });
+    this.addIconButton(actionsEl, "archive", "Archive event", () => {
+      this.plugin.setEventStatus(event.id, "archived");
+      this.render();
+    });
+    this.addIconButton(actionsEl, "trash-2", "Delete event", () => {
+      this.plugin.deleteEvent(event.id);
+      this.render();
+    }).addClass("memento-settings-btn-delete");
+  }
+  addIconButton(container, icon, label, onClick) {
+    const button = container.createEl("button", {
+      cls: "memento-settings-btn",
+      attr: { "aria-label": label }
+    });
+    (0, import_obsidian4.setIcon)(button, icon);
+    button.addEventListener("click", onClick);
+    return button;
   }
 };
 
+// src/IcsSync.ts
+var import_obsidian5 = require("obsidian");
+async function syncExternalCalendarSource(source, existingEvents) {
+  const response = await (0, import_obsidian5.requestUrl)({ url: source.url });
+  const seenAt = (/* @__PURE__ */ new Date()).toISOString();
+  const existingByUid = new Map(
+    existingEvents.filter((event) => event.sourceId === source.id).map((event) => [event.externalUid, event])
+  );
+  const parsed = parseIcs(response.text, source.id, seenAt, existingByUid);
+  return {
+    source: {
+      ...source,
+      lastFetchedAt: seenAt,
+      lastError: ""
+    },
+    events: parsed
+  };
+}
+function parseIcs(icsText, sourceId, seenAt, existingByUid = /* @__PURE__ */ new Map()) {
+  const lines = unfoldIcsLines(icsText);
+  const rawEvents = [];
+  let current = null;
+  for (const line of lines) {
+    if (line === "BEGIN:VEVENT") {
+      current = {};
+      continue;
+    }
+    if (line === "END:VEVENT") {
+      if (current?.dtstart) {
+        rawEvents.push({
+          uid: current.uid || generateId(),
+          summary: current.summary || "Untitled event",
+          description: current.description || "",
+          location: current.location || "",
+          url: current.url || "",
+          dtstart: current.dtstart,
+          dtend: current.dtend || "",
+          rrule: current.rrule || ""
+        });
+      }
+      current = null;
+      continue;
+    }
+    if (!current) continue;
+    const { name, value } = parseProperty(line);
+    switch (name) {
+      case "UID":
+        current.uid = value;
+        break;
+      case "SUMMARY":
+        current.summary = decodeIcsText(value);
+        break;
+      case "DESCRIPTION":
+        current.description = decodeIcsText(value);
+        break;
+      case "LOCATION":
+        current.location = decodeIcsText(value);
+        break;
+      case "URL":
+        current.url = decodeIcsText(value);
+        break;
+      case "DTSTART":
+        current.dtstart = value;
+        break;
+      case "DTEND":
+        current.dtend = value;
+        break;
+      case "RRULE":
+        current.rrule = value;
+        break;
+      default:
+        break;
+    }
+  }
+  return rawEvents.map((event) => normalizeIcsEvent(event, sourceId, seenAt, existingByUid));
+}
+function normalizeIcsEvent(event, sourceId, seenAt, existingByUid) {
+  const start = parseIcsDate(event.dtstart);
+  const end = event.dtend ? parseIcsDate(event.dtend) : null;
+  const recurrence = parseRrule(event.rrule);
+  const existing = existingByUid.get(event.uid);
+  return {
+    id: existing?.id || generateId(),
+    sourceId,
+    externalUid: event.uid,
+    title: event.summary,
+    context: event.description,
+    location: event.location,
+    url: event.url,
+    date: start.date,
+    time: start.time,
+    endDate: end?.date,
+    endTime: end?.time,
+    allDay: start.allDay,
+    recurrence: recurrence.recurrence,
+    recurrenceInterval: recurrence.recurrenceInterval,
+    recurrenceEndDate: recurrence.recurrenceEndDate,
+    recurrenceCount: recurrence.recurrenceCount,
+    notePaths: existing?.notePaths || {},
+    lastSeenAt: seenAt
+  };
+}
+function unfoldIcsLines(text) {
+  const rawLines = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
+  const lines = [];
+  for (const rawLine of rawLines) {
+    if (/^[ \t]/.test(rawLine) && lines.length > 0) {
+      lines[lines.length - 1] += rawLine.slice(1);
+    } else {
+      lines.push(rawLine.trimEnd());
+    }
+  }
+  return lines;
+}
+function parseProperty(line) {
+  const colonIdx = line.indexOf(":");
+  if (colonIdx === -1) return { name: line, value: "" };
+  const rawName = line.slice(0, colonIdx);
+  const name = rawName.split(";")[0].toUpperCase();
+  return { name, value: line.slice(colonIdx + 1) };
+}
+function decodeIcsText(value) {
+  return value.replace(/\\n/gi, "\n").replace(/\\,/g, ",").replace(/\\;/g, ";").replace(/\\\\/g, "\\").trim();
+}
+function parseIcsDate(value) {
+  const clean = value.trim();
+  if (/^\d{8}$/.test(clean)) {
+    return {
+      date: `${clean.slice(0, 4)}-${clean.slice(4, 6)}-${clean.slice(6, 8)}`,
+      time: "",
+      allDay: true
+    };
+  }
+  const match = clean.match(/^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})/);
+  if (!match) {
+    return { date: dateToStr(/* @__PURE__ */ new Date()), time: "", allDay: true };
+  }
+  if (clean.endsWith("Z")) {
+    const date = /* @__PURE__ */ new Date(
+      `${match[1]}-${match[2]}-${match[3]}T${match[4]}:${match[5]}:00Z`
+    );
+    return {
+      date: dateToStr(date),
+      time: `${date.getHours().toString().padStart(2, "0")}:${date.getMinutes().toString().padStart(2, "0")}`,
+      allDay: false
+    };
+  }
+  return {
+    date: `${match[1]}-${match[2]}-${match[3]}`,
+    time: `${match[4]}:${match[5]}`,
+    allDay: false
+  };
+}
+function parseRrule(rrule) {
+  if (!rrule) return { recurrence: "none" };
+  const parts = Object.fromEntries(
+    rrule.split(";").map((part) => {
+      const [key, value] = part.split("=");
+      return [key?.toUpperCase() || "", value || ""];
+    })
+  );
+  const freq = parts.FREQ?.toUpperCase();
+  const recurrence = frequencyToRecurrence(freq);
+  const interval = parseInt(parts.INTERVAL || "1", 10);
+  const count = parseInt(parts.COUNT || "", 10);
+  return {
+    recurrence,
+    recurrenceInterval: Number.isNaN(interval) ? 1 : Math.max(1, interval),
+    recurrenceEndDate: parts.UNTIL ? parseIcsDate(parts.UNTIL).date : void 0,
+    recurrenceCount: Number.isNaN(count) ? void 0 : count
+  };
+}
+function frequencyToRecurrence(freq) {
+  switch (freq) {
+    case "DAILY":
+      return "daily";
+    case "WEEKLY":
+      return "weekly";
+    case "MONTHLY":
+      return "monthly";
+    case "YEARLY":
+      return "yearly";
+    default:
+      return "none";
+  }
+}
+
 // src/main.ts
-var MementoPlugin = class extends import_obsidian5.Plugin {
+var MementoPlugin = class extends import_obsidian6.Plugin {
   async onload() {
     await this.loadSettings();
     this.registerView(VIEW_TYPE_TIMELINE, (leaf) => {
@@ -1244,14 +1994,14 @@ var MementoPlugin = class extends import_obsidian5.Plugin {
       id: "create-event",
       name: "Create a new event",
       callback: () => {
-        void this.openCreateEventModal();
+        this.openCreateEventModal();
       }
     });
     this.addCommand({
       id: "create-event-today",
       name: "Create event for today",
       callback: () => {
-        void this.createEventForDate(this.getTodayStr());
+        this.createEventForDate(getTodayStr());
       }
     });
     this.addCommand({
@@ -1261,17 +2011,26 @@ var MementoPlugin = class extends import_obsidian5.Plugin {
         void this.activateTimelineView();
       }
     });
+    this.addCommand({
+      id: "refresh-external-calendars",
+      name: "Refresh external calendars",
+      callback: () => {
+        void this.syncExternalCalendars();
+      }
+    });
     this.addRibbonIcon("calendar-clock", "Memento \u2014 Event Timeline", () => {
       void this.activateTimelineView();
     });
     this.app.workspace.onLayoutReady(() => {
       this.decorator.start();
       void this.activateTimelineView();
+      void this.syncDueExternalCalendars();
     });
     this.registerInterval(
       window.setInterval(() => {
         this.refreshTimeline();
         this.decorator.refresh();
+        void this.syncDueExternalCalendars();
       }, 60 * 1e3)
     );
   }
@@ -1285,8 +2044,19 @@ var MementoPlugin = class extends import_obsidian5.Plugin {
   }
   // ─── Settings Persistence ────────────────────────────────────────
   async loadSettings() {
-    const data = await this.loadData();
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, data || {});
+    const data = await this.loadData() || {};
+    this.settings = {
+      ...DEFAULT_SETTINGS,
+      ...data,
+      timelineFilters: {
+        ...DEFAULT_TIMELINE_FILTERS,
+        ...data.timelineFilters || {}
+      },
+      externalCalendarSources: data.externalCalendarSources || [],
+      externalEventsCache: data.externalEventsCache || [],
+      hiddenExternalEventIds: data.hiddenExternalEventIds || [],
+      events: (data.events || []).map((event) => normalizeEvent(event))
+    };
   }
   async saveSettings() {
     await this.saveData(this.settings);
@@ -1294,38 +2064,105 @@ var MementoPlugin = class extends import_obsidian5.Plugin {
     this.decorator?.refresh();
   }
   // ─── Event Management ────────────────────────────────────────────
-  /**
-   * Open the create event modal (no date pre-filled — user picks)
-   */
   openCreateEventModal() {
     new EventModal(this.app, (event) => {
-      this.settings.events.push(event);
+      this.settings.events.push(this.prepareEvent(event));
       void this.saveSettings();
     }).open();
   }
-  /**
-   * Open the create event modal for a specific date
-   */
   createEventForDate(dateStr) {
     new EventModal(
       this.app,
       (event) => {
-        this.settings.events.push(event);
+        this.settings.events.push(this.prepareEvent(event));
         void this.saveSettings();
       },
       void 0,
       dateStr
     ).open();
   }
+  updateEvent(updatedEvent) {
+    const idx = this.settings.events.findIndex((event) => event.id === updatedEvent.id);
+    if (idx === -1) return;
+    this.settings.events[idx] = this.prepareEvent({
+      ...this.settings.events[idx],
+      ...updatedEvent,
+      updatedAt: (/* @__PURE__ */ new Date()).toISOString()
+    });
+    void this.saveSettings();
+  }
+  duplicateEvent(event) {
+    const now = (/* @__PURE__ */ new Date()).toISOString();
+    this.settings.events.push(
+      this.prepareEvent({
+        ...event,
+        id: generateId(),
+        title: `${event.title} copy`,
+        status: "active",
+        notePaths: {},
+        createdAt: now,
+        updatedAt: now
+      })
+    );
+    void this.saveSettings();
+  }
+  setEventStatus(eventId, status) {
+    const event = this.settings.events.find((item) => item.id === eventId);
+    if (!event) return;
+    event.status = status;
+    event.updatedAt = (/* @__PURE__ */ new Date()).toISOString();
+    void this.saveSettings();
+  }
+  deleteEvent(eventId) {
+    this.settings.events = this.settings.events.filter((event) => event.id !== eventId);
+    void this.saveSettings();
+  }
+  importExternalEvent(event, occurrenceDate = event.date) {
+    const now = (/* @__PURE__ */ new Date()).toISOString();
+    const imported = this.prepareEvent({
+      id: generateId(),
+      date: occurrenceDate,
+      time: event.time,
+      endDate: event.endDate,
+      endTime: event.endTime,
+      title: event.title,
+      context: event.context || event.location || "",
+      recurrence: event.recurrence,
+      recurrenceInterval: event.recurrenceInterval,
+      recurrenceEndDate: event.recurrenceEndDate,
+      recurrenceCount: event.recurrenceCount,
+      status: "active",
+      notePaths: {},
+      createdAt: now,
+      updatedAt: now
+    });
+    this.settings.events.push(imported);
+    void this.saveSettings();
+    return imported;
+  }
+  hideExternalEvent(eventId) {
+    if (!this.settings.hiddenExternalEventIds.includes(eventId)) {
+      this.settings.hiddenExternalEventIds.push(eventId);
+      void this.saveSettings();
+    }
+  }
+  prepareEvent(event) {
+    const now = (/* @__PURE__ */ new Date()).toISOString();
+    return normalizeEvent({
+      ...event,
+      createdAt: event.createdAt || now,
+      updatedAt: event.updatedAt || now
+    });
+  }
+  // ─── Notes ───────────────────────────────────────────────────────
   getEventNotePath(event, occurrenceDate) {
+    const existingPath = event.notePaths?.[occurrenceDate];
+    if (existingPath) return existingPath;
     const folderPath = this.settings.eventNoteFolder.trim();
     const safeTitle = event.title.replace(/[\\/:"*?<>|#^[\]]/g, "").trim();
-    const filename = `${occurrenceDate} - ${safeTitle}.md`;
+    const filename = `${occurrenceDate} - ${safeTitle || "Untitled event"}.md`;
     return folderPath ? `${folderPath}/${filename}` : filename;
   }
-  /**
-   * Create or open a note for a specific event
-   */
   async createNoteForEvent(event, occurrenceDate) {
     const { vault, workspace } = this.app;
     const folderPath = this.settings.eventNoteFolder.trim();
@@ -1337,44 +2174,175 @@ var MementoPlugin = class extends import_obsidian5.Plugin {
     }
     const filePath = this.getEventNotePath(event, occurrenceDate);
     const abstractFile = vault.getAbstractFileByPath(filePath);
-    let file = null;
-    if (abstractFile instanceof import_obsidian5.TFile) {
-      file = abstractFile;
-    }
+    let file = abstractFile instanceof import_obsidian6.TFile ? abstractFile : null;
     if (!file) {
-      const isEs = this.settings.frontmatterLanguage === "es";
-      const titleKey = isEs ? "T\xEDtulo" : "Title";
-      const dateKey = isEs ? "Fecha" : "Date";
-      const contextKey = isEs ? "Contexto" : "Context";
-      const dateTimeStr = event.time ? `${occurrenceDate} ${event.time}` : occurrenceDate;
-      const safeTitleVal = event.title.replace(/"/g, '\\"');
-      const safeContextVal = event.context ? event.context.replace(/"/g, '\\"').replace(/\n/g, "\\n") : "";
-      let content = `---
-`;
-      content += `${titleKey}: "${safeTitleVal}"
-`;
-      content += `${dateKey}: ${dateTimeStr}
-`;
-      if (safeContextVal) {
-        content += `${contextKey}: "${safeContextVal}"
-`;
-      } else {
-        content += `${contextKey}: ""
-`;
-      }
-      content += `---
-
-# ${event.title}
-`;
-      file = await vault.create(filePath, content);
+      file = await vault.create(filePath, this.buildNoteContent(event, occurrenceDate));
+      this.rememberNotePath(event, occurrenceDate, file.path);
+      await this.saveSettings();
+    } else {
+      this.rememberNotePath(event, occurrenceDate, file.path);
+      await this.syncNoteFrontmatter(file, event, occurrenceDate);
+      await this.saveSettings();
     }
     const leaf = workspace.getLeaf(false);
     await leaf.openFile(file);
   }
+  buildNoteContent(event, occurrenceDate) {
+    const isEs = this.settings.frontmatterLanguage === "es";
+    const titleKey = isEs ? "T\xEDtulo" : "Title";
+    const dateKey = isEs ? "Fecha" : "Date";
+    const contextKey = isEs ? "Contexto" : "Context";
+    const sourceKey = isEs ? "Fuente" : "Source";
+    const locationKey = isEs ? "Ubicaci\xF3n" : "Location";
+    const dateTimeStr = event.time ? `${occurrenceDate} ${event.time}` : occurrenceDate;
+    const source = "sourceId" in event ? "External calendar" : "Memento";
+    const location = "location" in event ? event.location || "" : "";
+    let content = "---\n";
+    content += `${titleKey}: "${escapeYaml(event.title)}"
+`;
+    content += `${dateKey}: ${dateTimeStr}
+`;
+    content += `${contextKey}: "${escapeYaml(event.context || "")}"
+`;
+    content += `${sourceKey}: "${source}"
+`;
+    if (location) {
+      content += `${locationKey}: "${escapeYaml(location)}"
+`;
+    }
+    content += "---\n\n";
+    content += `# ${event.title}
+`;
+    if (event.context) {
+      content += `
+${event.context}
+`;
+    }
+    return content;
+  }
+  async syncNoteFrontmatter(file, event, occurrenceDate) {
+    const dateTimeStr = event.time ? `${occurrenceDate} ${event.time}` : occurrenceDate;
+    await this.app.fileManager.processFrontMatter(file, (frontmatter) => {
+      frontmatter.Title = event.title;
+      frontmatter.Date = dateTimeStr;
+      frontmatter.Context = event.context || "";
+      frontmatter.Source = "sourceId" in event ? "External calendar" : "Memento";
+      if ("location" in event && event.location) {
+        frontmatter.Location = event.location;
+      }
+    });
+  }
+  rememberNotePath(event, occurrenceDate, notePath) {
+    if ("externalUid" in event) {
+      const cached = this.settings.externalEventsCache.find((item) => item.id === event.id);
+      if (cached) {
+        cached.notePaths = { ...cached.notePaths || {}, [occurrenceDate]: notePath };
+      }
+      return;
+    }
+    const stored = this.settings.events.find((item) => item.id === event.id);
+    if (stored) {
+      stored.notePaths = { ...stored.notePaths || {}, [occurrenceDate]: notePath };
+      stored.updatedAt = (/* @__PURE__ */ new Date()).toISOString();
+    }
+  }
+  // ─── External Calendar Sync ──────────────────────────────────────
+  addExternalCalendarSource(source) {
+    this.settings.externalCalendarSources.push({
+      ...source,
+      id: generateId()
+    });
+    void this.saveSettings().then(() => this.syncExternalCalendars());
+  }
+  updateExternalCalendarSource(source) {
+    const idx = this.settings.externalCalendarSources.findIndex(
+      (item) => item.id === source.id
+    );
+    if (idx === -1) return;
+    this.settings.externalCalendarSources[idx] = source;
+    void this.saveSettings();
+  }
+  deleteExternalCalendarSource(sourceId) {
+    this.settings.externalCalendarSources = this.settings.externalCalendarSources.filter(
+      (source) => source.id !== sourceId
+    );
+    this.settings.externalEventsCache = this.settings.externalEventsCache.filter(
+      (event) => event.sourceId !== sourceId
+    );
+    void this.saveSettings();
+  }
+  async syncDueExternalCalendars() {
+    const now = Date.now();
+    const dueSources = this.settings.externalCalendarSources.filter((source) => {
+      if (!source.enabled) return false;
+      if (!source.lastFetchedAt) return true;
+      const elapsedMinutes = (now - new Date(source.lastFetchedAt).getTime()) / 6e4;
+      return elapsedMinutes >= source.refreshIntervalMinutes;
+    });
+    if (dueSources.length === 0) return;
+    await this.syncExternalCalendars(dueSources.map((source) => source.id));
+  }
+  async syncExternalCalendars(sourceIds) {
+    const sources = this.settings.externalCalendarSources.filter((source) => {
+      if (!source.enabled) return false;
+      return !sourceIds || sourceIds.includes(source.id);
+    });
+    for (const source of sources) {
+      try {
+        const result = await syncExternalCalendarSource(
+          source,
+          this.settings.externalEventsCache
+        );
+        this.settings.externalCalendarSources = this.settings.externalCalendarSources.map(
+          (item) => item.id === source.id ? result.source : item
+        );
+        this.settings.externalEventsCache = [
+          ...this.settings.externalEventsCache.filter(
+            (event) => event.sourceId !== source.id
+          ),
+          ...result.events
+        ];
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.settings.externalCalendarSources = this.settings.externalCalendarSources.map(
+          (item) => item.id === source.id ? { ...item, lastError: message, lastFetchedAt: (/* @__PURE__ */ new Date()).toISOString() } : item
+        );
+        new import_obsidian6.Notice(`Memento calendar sync failed: ${source.name}`);
+      }
+    }
+    await this.saveSettings();
+  }
+  // ─── Data Import / Export ────────────────────────────────────────
+  async exportEventsToJson() {
+    const stamp = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
+    const filename = `memento-export-${stamp}.json`;
+    const payload = JSON.stringify(
+      {
+        version: "1.0.4",
+        exportedAt: (/* @__PURE__ */ new Date()).toISOString(),
+        events: this.settings.events,
+        externalCalendarSources: this.settings.externalCalendarSources
+      },
+      null,
+      2
+    );
+    await this.app.vault.create(filename, payload);
+    new import_obsidian6.Notice(`Memento export created: ${filename}`);
+  }
+  importEventsFromJson(text) {
+    const parsed = JSON.parse(text);
+    const incoming = parsed.events || [];
+    const existingIds = new Set(this.settings.events.map((event) => event.id));
+    const imported = incoming.map((event) => {
+      const id = existingIds.has(event.id) ? generateId() : event.id || generateId();
+      existingIds.add(id);
+      return this.prepareEvent({ ...event, id });
+    });
+    this.settings.events.push(...imported);
+    void this.saveSettings();
+    return imported.length;
+  }
   // ─── Timeline View ───────────────────────────────────────────────
-  /**
-   * Activate (open/reveal) the timeline view in the right sidebar
-   */
   async activateTimelineView() {
     const { workspace } = this.app;
     let leaf = workspace.getLeavesOfType(VIEW_TYPE_TIMELINE)[0];
@@ -1392,9 +2360,6 @@ var MementoPlugin = class extends import_obsidian5.Plugin {
       void workspace.revealLeaf(leaf);
     }
   }
-  /**
-   * Refresh the timeline view contents
-   */
   refreshTimeline() {
     const leaves = this.app.workspace.getLeavesOfType(VIEW_TYPE_TIMELINE);
     for (const leaf of leaves) {
@@ -1403,9 +2368,7 @@ var MementoPlugin = class extends import_obsidian5.Plugin {
       }
     }
   }
-  // ─── Utilities ───────────────────────────────────────────────────
-  getTodayStr() {
-    const d = /* @__PURE__ */ new Date();
-    return `${d.getFullYear()}-${(d.getMonth() + 1).toString().padStart(2, "0")}-${d.getDate().toString().padStart(2, "0")}`;
-  }
 };
+function escapeYaml(value) {
+  return value.replace(/"/g, '\\"').replace(/\n/g, "\\n");
+}

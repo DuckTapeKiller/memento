@@ -2,6 +2,7 @@ import { App, Modal, Setting, DropdownComponent } from "obsidian";
 import {
   MementoEvent,
   RecurrenceType,
+  EventStatus,
   RECURRENCE_LABELS,
   generateId,
   formatDateDisplay,
@@ -33,7 +34,11 @@ export class EventModal extends Modal {
         title: "",
         context: "",
         recurrence: "none",
+        recurrenceInterval: 1,
+        status: "active",
+        notePaths: {},
         createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
       };
     }
   }
@@ -93,6 +98,18 @@ export class EventModal extends Modal {
         text.onChange((value) => {
           this.event.date = value;
           updateDateBadge();
+        });
+        text.inputEl.addClass("memento-date-input");
+      });
+
+    new Setting(form)
+      .setName("End date")
+      .setDesc("Optional end date for longer events")
+      .addText((text) => {
+        text.inputEl.type = "date";
+        text.setValue(this.event.endDate || "");
+        text.onChange((value) => {
+          this.event.endDate = value || undefined;
         });
         text.inputEl.addClass("memento-date-input");
       });
@@ -171,6 +188,77 @@ export class EventModal extends Modal {
       }
     };
 
+    let currentEndHour = "--";
+    let currentEndMin = "--";
+    if (this.event.endTime) {
+      const [h, m] = this.event.endTime.split(":");
+      currentEndHour = h;
+      currentEndMin = m;
+    }
+
+    const endTimeSetting = new Setting(form)
+      .setName("End time")
+      .setDesc("Optional end time");
+
+    endTimeSetting.addText((text) => {
+      text.inputEl.type = "number";
+      text.inputEl.min = "0";
+      text.inputEl.max = "23";
+      text.inputEl.placeholder = "HH";
+      text.inputEl.setCssStyles({ width: "4rem", textAlign: "center" });
+      text.setValue(currentEndHour !== "--" ? currentEndHour : "");
+      text.onChange((value) => {
+        let val = parseInt(value, 10);
+        if (isNaN(val)) {
+          currentEndHour = "--";
+        } else {
+          if (val < 0) val = 0;
+          if (val > 23) val = 23;
+          currentEndHour = val.toString().padStart(2, "0");
+          text.setValue(currentEndHour);
+        }
+        updateEndTime();
+      });
+    });
+
+    endTimeSetting.controlEl
+      .createSpan({
+        text: " : ",
+        cls: "memento-time-separator",
+      })
+      .setCssStyles({ margin: "0 0.2rem", fontWeight: "bold" });
+
+    endTimeSetting.addText((text) => {
+      text.inputEl.type = "number";
+      text.inputEl.min = "0";
+      text.inputEl.max = "59";
+      text.inputEl.placeholder = "MM";
+      text.inputEl.setCssStyles({ width: "4rem", textAlign: "center" });
+      text.setValue(currentEndMin !== "--" ? currentEndMin : "");
+      text.onChange((value) => {
+        let val = parseInt(value, 10);
+        if (isNaN(val)) {
+          currentEndMin = "--";
+        } else {
+          if (val < 0) val = 0;
+          if (val > 59) val = 59;
+          currentEndMin = val.toString().padStart(2, "0");
+          text.setValue(currentEndMin);
+        }
+        updateEndTime();
+      });
+    });
+
+    const updateEndTime = () => {
+      if (currentEndHour === "--" && currentEndMin === "--") {
+        this.event.endTime = "";
+      } else {
+        const h = currentEndHour === "--" ? "12" : currentEndHour;
+        const m = currentEndMin === "--" ? "00" : currentEndMin;
+        this.event.endTime = `${h}:${m}`;
+      }
+    };
+
     // Title field
     let titleInput: HTMLInputElement;
     new Setting(form)
@@ -212,6 +300,59 @@ export class EventModal extends Modal {
         dropdown.onChange((value) => {
           this.event.recurrence = value as RecurrenceType;
         });
+      });
+
+    new Setting(form)
+      .setName("Repeat interval")
+      .setDesc("Use 1 for every day/week/month/year, 2 for every other, etc.")
+      .addText((text) => {
+        text.inputEl.type = "number";
+        text.inputEl.min = "1";
+        text.setValue((this.event.recurrenceInterval || 1).toString());
+        text.onChange((value) => {
+          const parsed = parseInt(value, 10);
+          this.event.recurrenceInterval =
+            Number.isNaN(parsed) || parsed < 1 ? 1 : parsed;
+        });
+      });
+
+    new Setting(form)
+      .setName("Repeat until")
+      .setDesc("Optional recurrence end date")
+      .addText((text) => {
+        text.inputEl.type = "date";
+        text.setValue(this.event.recurrenceEndDate || "");
+        text.onChange((value) => {
+          this.event.recurrenceEndDate = value || undefined;
+        });
+      });
+
+    new Setting(form)
+      .setName("Repeat count")
+      .setDesc("Optional maximum number of occurrences")
+      .addText((text) => {
+        text.inputEl.type = "number";
+        text.inputEl.min = "1";
+        text.setValue(this.event.recurrenceCount?.toString() || "");
+        text.onChange((value) => {
+          const parsed = parseInt(value, 10);
+          this.event.recurrenceCount =
+            Number.isNaN(parsed) || parsed < 1 ? undefined : parsed;
+        });
+      });
+
+    new Setting(form)
+      .setName("Status")
+      .setDesc("Completed and archived events are hidden unless enabled")
+      .addDropdown((dropdown: DropdownComponent) => {
+        dropdown
+          .addOption("active", "Active")
+          .addOption("completed", "Completed")
+          .addOption("archived", "Archived")
+          .setValue(this.event.status || "active")
+          .onChange((value) => {
+            this.event.status = value as EventStatus;
+          });
       });
 
     // Buttons
@@ -256,10 +397,18 @@ export class EventModal extends Modal {
       id: this.event.id || generateId(),
       date: this.event.date || getTodayStr(),
       time: this.event.time || "",
+      endDate: this.event.endDate || undefined,
+      endTime: this.event.endTime || "",
       title: this.event.title.trim(),
       context: this.event.context?.trim() || "",
       recurrence: this.event.recurrence || "none",
+      recurrenceInterval: Math.max(1, this.event.recurrenceInterval || 1),
+      recurrenceEndDate: this.event.recurrenceEndDate || undefined,
+      recurrenceCount: this.event.recurrenceCount,
+      status: this.event.status || "active",
+      notePaths: this.event.notePaths || {},
       createdAt: this.event.createdAt || new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
     };
 
     this.onSubmit(fullEvent);

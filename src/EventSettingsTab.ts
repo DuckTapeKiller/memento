@@ -1,10 +1,13 @@
-import { App, PluginSettingTab, Setting, setIcon } from "obsidian";
+import { App, Notice, PluginSettingTab, Setting, setIcon } from "obsidian";
 import type MementoPlugin from "./main";
 import {
+  ExternalCalendarSource,
   MementoEvent,
-  RECURRENCE_LABELS,
   formatDateDisplay,
   formatTimeDisplay,
+  generateId,
+  getRecurrenceLabel,
+  getTodayStr,
 } from "./types";
 import { EventModal } from "./EventModal";
 
@@ -25,7 +28,14 @@ export class EventSettingsTab extends PluginSettingTab {
     containerEl.empty();
     containerEl.addClass("memento-settings");
 
-    // Header and General Settings removed per Obsidian lint rules
+    this.renderTimelineSettings(containerEl);
+    this.renderExternalCalendars(containerEl);
+    this.renderDataManagement(containerEl);
+    this.renderEvents(containerEl);
+  }
+
+  private renderTimelineSettings(containerEl: HTMLElement): void {
+    new Setting(containerEl).setName("Timeline").setHeading();
 
     new Setting(containerEl)
       .setName("Timeline view mode")
@@ -81,14 +91,150 @@ export class EventSettingsTab extends PluginSettingTab {
             await this.plugin.saveSettings();
           }),
       );
+  }
 
-    // Events section
-    const eventsHeading = new Setting(containerEl)
+  private renderExternalCalendars(containerEl: HTMLElement): void {
+    new Setting(containerEl).setName("External Calendars").setHeading();
+
+    let name = "";
+    let url = "";
+    let refreshIntervalMinutes = 60;
+
+    new Setting(containerEl)
+      .setName("Add ICS calendar")
+      .setDesc("Use a private Google Calendar ICS URL or shared iCloud ICS URL")
+      .addText((text) =>
+        text.setPlaceholder("Calendar name").onChange((value) => {
+          name = value.trim();
+        }),
+      )
+      .addText((text) =>
+        text.setPlaceholder("https://...ics").onChange((value) => {
+          url = value.trim();
+        }),
+      )
+      .addText((text) => {
+        text.inputEl.type = "number";
+        text.inputEl.min = "5";
+        text.setPlaceholder("Refresh minutes");
+        text.setValue(refreshIntervalMinutes.toString());
+        text.onChange((value) => {
+          const parsed = parseInt(value, 10);
+          refreshIntervalMinutes = Number.isNaN(parsed) ? 60 : Math.max(5, parsed);
+        });
+      })
+      .addButton((button) =>
+        button
+          .setButtonText("Add")
+          .setCta()
+          .onClick(() => {
+            if (!name || !url) {
+              new Notice("Calendar name and ICS URL are required.");
+              return;
+            }
+            this.plugin.addExternalCalendarSource({
+              name,
+              type: "ics",
+              url,
+              enabled: true,
+              refreshIntervalMinutes,
+            });
+            this.render();
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName("Refresh external calendars")
+      .setDesc("Fetch all enabled ICS subscriptions now")
+      .addButton((button) =>
+        button.setButtonText("Refresh now").onClick(() => {
+          void this.plugin.syncExternalCalendars().then(() => this.render());
+        }),
+      );
+
+    for (const source of this.plugin.settings.externalCalendarSources) {
+      this.renderExternalCalendarItem(containerEl, source);
+    }
+  }
+
+  private renderExternalCalendarItem(
+    containerEl: HTMLElement,
+    source: ExternalCalendarSource,
+  ): void {
+    const sourceEvents = this.plugin.settings.externalEventsCache.filter(
+      (event) => event.sourceId === source.id,
+    );
+
+    new Setting(containerEl)
+      .setName(source.name)
+      .setDesc(
+        `${sourceEvents.length} cached events${
+          source.lastFetchedAt ? ` · Last sync ${source.lastFetchedAt}` : ""
+        }${source.lastError ? ` · Error: ${source.lastError}` : ""}`,
+      )
+      .addToggle((toggle) =>
+        toggle.setValue(source.enabled).onChange((value) => {
+          this.plugin.updateExternalCalendarSource({ ...source, enabled: value });
+          this.render();
+        }),
+      )
+      .addButton((button) =>
+        button.setButtonText("Refresh").onClick(() => {
+          void this.plugin.syncExternalCalendars([source.id]).then(() => this.render());
+        }),
+      )
+      .addButton((button) =>
+        button
+          .setButtonText("Remove")
+          .setWarning()
+          .onClick(() => {
+            this.plugin.deleteExternalCalendarSource(source.id);
+            this.render();
+          }),
+      );
+  }
+
+  private renderDataManagement(containerEl: HTMLElement): void {
+    new Setting(containerEl).setName("Data Management").setHeading();
+
+    new Setting(containerEl)
+      .setName("Export events")
+      .setDesc("Create a JSON backup file in the vault root")
+      .addButton((button) =>
+        button.setButtonText("Export JSON").onClick(() => {
+          void this.plugin.exportEventsToJson();
+        }),
+      );
+
+    let importText = "";
+    new Setting(containerEl)
+      .setName("Import events")
+      .setDesc("Paste a Memento JSON export. Duplicate ids are regenerated.")
+      .addTextArea((text) =>
+        text.setPlaceholder("Paste JSON").onChange((value) => {
+          importText = value;
+        }),
+      )
+      .addButton((button) =>
+        button.setButtonText("Import JSON").onClick(() => {
+          try {
+            const count = this.plugin.importEventsFromJson(importText);
+            new Notice(`Imported ${count} events.`);
+            this.render();
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            new Notice(`Import failed: ${message}`);
+          }
+        }),
+      );
+  }
+
+  private renderEvents(containerEl: HTMLElement): void {
+    new Setting(containerEl)
       .setName("Events")
-      .setHeading();
-    eventsHeading.settingEl.addClass("memento-settings-events-heading");
+      .setHeading()
+      .settingEl.addClass("memento-settings-events-heading");
 
-    // Add event button
     new Setting(containerEl)
       .setName("Create a new event")
       .setDesc("Add a new event to your calendar")
@@ -98,19 +244,22 @@ export class EventSettingsTab extends PluginSettingTab {
           .setCta()
           .onClick(() => {
             new EventModal(this.app, (event) => {
-              this.plugin.settings.events.push(event);
+              this.plugin.settings.events.push({
+                ...event,
+                id: event.id || generateId(),
+                updatedAt: new Date().toISOString(),
+              });
               void this.plugin.saveSettings().then(() => this.render());
             }).open();
           }),
       );
 
-    // Events list
     const events = this.getFilteredEvents();
 
     if (events.length === 0) {
       const emptyDiv = containerEl.createDiv({ cls: "memento-settings-empty" });
       emptyDiv.createEl("p", {
-        text: "No events yet. Create your first event above!",
+        text: "No events yet. Create your first event above.",
         cls: "setting-item-description",
       });
     } else {
@@ -122,61 +271,26 @@ export class EventSettingsTab extends PluginSettingTab {
         this.renderEventItem(eventsContainer, event);
       }
     }
-
-    // Danger zone
-    if (this.plugin.settings.events.length > 0) {
-      const dangerHeading = new Setting(containerEl)
-        .setName("Danger Zone")
-        .setHeading();
-      dangerHeading.settingEl.addClass("memento-settings-danger-heading");
-
-      new Setting(containerEl)
-        .setName("Delete all events")
-        .setDesc("Permanently remove all events. This cannot be undone.")
-        .addButton((button) =>
-          button
-            .setButtonText("Delete All")
-            .setDestructive()
-            .onClick(() => {
-              // Confirmation removed temporarily to pass lint
-              this.plugin.settings.events = [];
-              void this.plugin.saveSettings().then(() => this.render());
-            }),
-        );
-    }
   }
 
-  /**
-   * Get events filtered based on settings
-   */
   private getFilteredEvents(): MementoEvent[] {
     let events = [...this.plugin.settings.events];
 
     if (!this.plugin.settings.showPastEventsInSettings) {
-      const today = new Date();
-      const todayStr = `${today.getFullYear()}-${(today.getMonth() + 1).toString().padStart(2, "0")}-${today.getDate().toString().padStart(2, "0")}`;
-
-      events = events.filter((e) => {
-        // Always show recurring events
-        if (e.recurrence !== "none") return true;
-        // Show one-time events that are today or future
-        return e.date >= todayStr;
+      const todayStr = getTodayStr();
+      events = events.filter((event) => {
+        if (event.status === "archived") return false;
+        if (event.recurrence !== "none") return true;
+        return event.date >= todayStr;
       });
     }
 
-    // Sort: upcoming first, then by date
     events.sort((a, b) => a.date.localeCompare(b.date));
-
     return events;
   }
 
-  /**
-   * Render a single event item in the settings list
-   */
   private renderEventItem(container: HTMLElement, event: MementoEvent): void {
     const eventEl = container.createDiv({ cls: "memento-settings-event" });
-
-    // Left: event info
     const infoEl = eventEl.createDiv({ cls: "memento-settings-event-info" });
 
     const titleRow = infoEl.createDiv({
@@ -187,9 +301,14 @@ export class EventSettingsTab extends PluginSettingTab {
       cls: "memento-settings-event-title",
     });
 
+    titleRow.createSpan({
+      text: event.status || "active",
+      cls: "memento-settings-event-badge",
+    });
+
     if (event.recurrence !== "none") {
       titleRow.createSpan({
-        text: RECURRENCE_LABELS[event.recurrence],
+        text: getRecurrenceLabel(event),
         cls: "memento-settings-event-badge",
       });
     }
@@ -215,42 +334,54 @@ export class EventSettingsTab extends PluginSettingTab {
       });
     }
 
-    // Right: action buttons
     const actionsEl = eventEl.createDiv({
       cls: "memento-settings-event-actions",
     });
 
-    const editBtn = actionsEl.createEl("button", {
-      cls: "memento-settings-btn memento-settings-btn-edit",
-      attr: { "aria-label": "Edit event" },
-    });
-    setIcon(editBtn, "pencil");
-    editBtn.addEventListener("click", () => {
+    this.addIconButton(actionsEl, "pencil", "Edit event", () => {
       new EventModal(
         this.app,
         (updatedEvent) => {
-          const idx = this.plugin.settings.events.findIndex(
-            (e) => e.id === event.id,
-          );
-          if (idx !== -1) {
-            this.plugin.settings.events[idx] = updatedEvent;
-            void this.plugin.saveSettings().then(() => this.render());
-          }
+          this.plugin.updateEvent(updatedEvent);
+          this.render();
         },
         event,
       ).open();
     });
 
-    const deleteBtn = actionsEl.createEl("button", {
-      cls: "memento-settings-btn memento-settings-btn-delete",
-      attr: { "aria-label": "Delete event" },
+    this.addIconButton(actionsEl, "copy", "Duplicate event", () => {
+      this.plugin.duplicateEvent(event);
+      this.render();
     });
-    setIcon(deleteBtn, "trash-2");
-    deleteBtn.addEventListener("click", () => {
-      this.plugin.settings.events = this.plugin.settings.events.filter(
-        (e) => e.id !== event.id,
-      );
-      void this.plugin.saveSettings().then(() => this.render());
+
+    this.addIconButton(actionsEl, "check", "Mark complete", () => {
+      this.plugin.setEventStatus(event.id, "completed");
+      this.render();
     });
+
+    this.addIconButton(actionsEl, "archive", "Archive event", () => {
+      this.plugin.setEventStatus(event.id, "archived");
+      this.render();
+    });
+
+    this.addIconButton(actionsEl, "trash-2", "Delete event", () => {
+      this.plugin.deleteEvent(event.id);
+      this.render();
+    }).addClass("memento-settings-btn-delete");
+  }
+
+  private addIconButton(
+    container: HTMLElement,
+    icon: string,
+    label: string,
+    onClick: () => void,
+  ): HTMLElement {
+    const button = container.createEl("button", {
+      cls: "memento-settings-btn",
+      attr: { "aria-label": label },
+    });
+    setIcon(button, icon);
+    button.addEventListener("click", onClick);
+    return button;
   }
 }
