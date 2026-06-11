@@ -256,6 +256,178 @@ body .memento-time-input::-webkit-datetime-edit-ampm-field:focus {
   margin: 0 auto;
 }
 
+.memento-timeline-controls {
+  padding: 0.75rem 1rem;
+  border-bottom: var(--border-width) solid var(--background-modifier-border);
+  background: var(--background-primary);
+}
+
+.memento-search-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.3rem;
+}
+
+.memento-filters-label {
+  font-size: var(--font-ui-small);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.memento-search-button {
+  padding: 0.35rem 0.85rem;
+  border-radius: var(--memento-radius-sm);
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-secondary-alt);
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+  font-weight: 600;
+  font-family: var(--font-interface);
+  cursor: pointer;
+  transition:
+    border-color 0.2s ease,
+    background 0.2s ease,
+    color 0.2s ease,
+    box-shadow 0.2s ease;
+}
+
+.memento-search-button:hover {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+  border-color: color-mix(in srgb, var(--memento-accent) 35%, transparent);
+  box-shadow: 0 2px 6px color-mix(in srgb, var(--memento-accent) 10%, transparent);
+}
+
+.memento-search-button.is-active {
+  color: var(--text-normal);
+  background: var(--background-primary);
+  border-color: var(--memento-accent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--memento-accent) 20%, transparent);
+}
+
+.memento-filters-body {
+  display: none;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin-top: 0.35rem;
+}
+
+.memento-filters-body.is-visible {
+  display: flex;
+}
+
+.memento-search-area {
+  display: flex;
+  align-items: center;
+  margin: 0;
+  padding: 0.6rem;
+  gap: 0.5rem;
+  border-radius: var(--memento-radius);
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-secondary);
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--memento-accent) 6%, transparent);
+}
+
+.memento-search-input {
+  flex: 1;
+  padding: 0.45rem 0.7rem;
+  border-radius: var(--memento-radius-sm);
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-primary);
+  color: var(--text-normal);
+  font-size: var(--font-ui-small);
+  line-height: 1.4;
+  transition:
+    border-color 0.2s ease,
+    box-shadow 0.2s ease;
+}
+
+.memento-search-input:focus {
+  border-color: var(--memento-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--memento-accent) 20%, transparent);
+  outline: none;
+}
+
+.memento-search-input::placeholder {
+  color: var(--text-faint);
+}
+
+.memento-search-clear {
+  width: 30px;
+  height: 30px;
+  border-radius: var(--memento-radius-sm);
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-size: 1rem;
+  line-height: 1;
+  transition:
+    background 0.2s ease,
+    color 0.2s ease;
+}
+
+.memento-search-clear:hover {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+.memento-filters-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.memento-filters-group .setting-item {
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--memento-radius);
+  background: var(--background-primary);
+  padding: 0.75rem 0.9rem;
+  box-shadow: 0 2px 6px color-mix(in srgb, var(--memento-accent) 6%, transparent);
+  align-items: center;
+  gap: 0.85rem;
+}
+
+.memento-filters-group .setting-item-info {
+  flex: 1;
+  margin-bottom: 0;
+  padding-right: 0.75rem;
+}
+
+.memento-filters-group .setting-item-name {
+  font-size: var(--font-ui-small);
+  font-weight: 600;
+  color: var(--text-muted);
+  letter-spacing: 0.02em;
+  margin-bottom: 0.25rem;
+}
+
+.memento-filters-group .setting-item-description {
+  color: var(--text-faint);
+}
+
+.memento-filters-group .setting-item-control {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.25rem 0.45rem;
+  border-radius: var(--memento-radius-sm);
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+}
+
+.memento-timeline-controls .setting-item {
+  border-top: none;
+  padding: 0;
+}
+
 .memento-timeline {
   list-style: none;
   padding: 1.5rem 1rem 1.5rem 1.5rem;
@@ -296,6 +468,10 @@ body .memento-time-input::-webkit-datetime-edit-ampm-field:focus {
       --text-highlight-bg,
       var(--color-accent, var(--interactive-accent, #8b5cf6))
     );
+}
+
+.memento-tl-external::before {
+  background-color: var(--color-cyan, var(--interactive-accent));
 }
 
 /* Hover Delete Button */
@@ -380,6 +556,22 @@ body .memento-time-input::-webkit-datetime-edit-ampm-field:focus {
   font-size: var(--font-ui-smaller);
   font-weight: 600;
   color: var(--text-muted);
+}
+
+.memento-tl-source-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.1rem 0.5rem;
+  background: var(--background-secondary);
+  border: var(--border-width) solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  font-size: var(--font-ui-smaller);
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.memento-tl-source-external {
+  color: var(--color-cyan, var(--text-accent));
 }
 
 /* 2b. Days Remaining */
@@ -587,6 +779,18 @@ body .memento-settings-danger-heading {
 .memento-settings-btn-delete:hover {
   background: color-mix(in srgb, var(--text-error) 15%, transparent);
   color: var(--text-error);
+}
+
+.memento-action-modal .setting-item-control {
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.memento-action-source {
+  color: var(--text-accent);
+  font-size: var(--font-ui-small);
+  font-weight: 600;
+  margin-top: -0.5rem;
 }
 
 /* ================================================================= */
