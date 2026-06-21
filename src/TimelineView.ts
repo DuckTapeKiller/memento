@@ -1,4 +1,12 @@
-import { App, ItemView, Modal, Setting, WorkspaceLeaf, setIcon } from "obsidian";
+import {
+  App,
+  ItemView,
+  Menu,
+  Modal,
+  Setting,
+  WorkspaceLeaf,
+  setIcon,
+} from "obsidian";
 import type MementoPlugin from "./main";
 import {
   ExternalCalendarEvent,
@@ -80,7 +88,9 @@ class EventActionModal extends Modal {
     contentEl.createEl("h2", { text: event.title });
     contentEl.createEl("p", {
       text: `${formatDateDisplay(this.entry.occurrenceDate)}${
-        this.entry.occurrenceTime ? ` at ${formatTimeDisplay(this.entry.occurrenceTime)}` : ""
+        this.entry.occurrenceTime
+          ? ` at ${formatTimeDisplay(this.entry.occurrenceTime)}`
+          : ""
       }`,
       cls: "setting-item-description",
     });
@@ -93,7 +103,10 @@ class EventActionModal extends Modal {
       contentEl.createEl("p", { text: event.context });
     }
     if (isExternalEvent(event) && event.location) {
-      contentEl.createEl("p", { text: event.location, cls: "setting-item-description" });
+      contentEl.createEl("p", {
+        text: event.location,
+        cls: "setting-item-description",
+      });
     }
 
     const setting = new Setting(contentEl).addButton((btn) =>
@@ -194,6 +207,7 @@ export class TimelineView extends ItemView {
   plugin: MementoPlugin;
   private shouldRestoreSearchFocus = false;
   private searchCursorPosition: number | null = null;
+  private filtersExpanded = false;
 
   constructor(leaf: WorkspaceLeaf, plugin: MementoPlugin) {
     super(leaf);
@@ -256,7 +270,6 @@ export class TimelineView extends ItemView {
     const controls = container.createDiv({ cls: "memento-timeline-controls" });
 
     const headerRow = controls.createDiv({ cls: "memento-search-header" });
-    headerRow.createSpan({ cls: "memento-filters-label", text: "Filters" });
     const searchButton = headerRow.createEl("button", {
       cls: "memento-search-button",
       attr: { type: "button" },
@@ -278,17 +291,15 @@ export class TimelineView extends ItemView {
     });
     clearButton.textContent = "×";
 
-    const filtersGroup = filtersBody.createDiv({ cls: "memento-filters-group" });
+    const filtersGroup = filtersBody.createDiv({
+      cls: "memento-filters-group",
+    });
 
-    const hasActiveFilters =
-      filters.search.trim().length > 0 ||
-      filters.source !== "all" ||
-      filters.sourceId !== "" ||
-      filters.dateRange !== "upcoming" ||
-      filters.includeCompleted ||
-      filters.includeArchived;
-
-    const applyVisibility = (visible: boolean, options: { focus?: boolean } = {}) => {
+    const applyVisibility = (
+      visible: boolean,
+      options: { focus?: boolean } = {},
+    ) => {
+      this.filtersExpanded = visible;
       filtersBody.toggleClass("is-visible", visible);
       searchButton.toggleClass("is-active", visible);
       searchButton.textContent = visible ? "Hide filters" : "Show filters";
@@ -309,7 +320,10 @@ export class TimelineView extends ItemView {
       }
     };
 
-    applyVisibility(hasActiveFilters, {
+    // Filters are collapsed by default and stay collapsed on every app start.
+    // The panel only opens when the user explicitly toggles it open — it is
+    // never auto-expanded from persisted (active) filter values.
+    applyVisibility(this.filtersExpanded, {
       focus: this.shouldRestoreSearchFocus,
     });
 
@@ -338,78 +352,118 @@ export class TimelineView extends ItemView {
       }
     });
 
-    new Setting(filtersGroup)
-      .setName("Source")
-      .addDropdown((dropdown) => {
-        dropdown
-          .addOption("all", "All sources")
-          .addOption("memento", "Memento only")
-          .addOption("external", "External only")
-          .setValue(filters.source)
-          .onChange((value) => {
-            filters.source = value as typeof filters.source;
-            filters.sourceId = "";
-            this.shouldRestoreSearchFocus = true;
-            this.searchCursorPosition = null;
-            void this.plugin.saveSettings();
-          });
-      });
+    this.addThemedDropdown(
+      new Setting(filtersGroup).setName("Source"),
+      [
+        { value: "all", label: "All sources" },
+        { value: "memento", label: "Memento only" },
+        { value: "external", label: "External only" },
+      ],
+      filters.source,
+      (value) => {
+        filters.source = value as typeof filters.source;
+        filters.sourceId = "";
+        this.shouldRestoreSearchFocus = true;
+        this.searchCursorPosition = null;
+        void this.plugin.saveSettings();
+      },
+    );
 
-    new Setting(filtersGroup)
-      .setName("Calendar")
-      .addDropdown((dropdown) => {
-        dropdown.addOption("", "Any calendar");
-        dropdown.addOption("memento", "Memento");
-        for (const source of this.plugin.settings.externalCalendarSources) {
-          dropdown.addOption(source.id, source.name);
-        }
-        dropdown.setValue(filters.sourceId);
-        dropdown.onChange((value) => {
-          filters.sourceId = value;
-          this.shouldRestoreSearchFocus = true;
-          this.searchCursorPosition = null;
-          void this.plugin.saveSettings();
-        });
-      });
+    this.addThemedDropdown(
+      new Setting(filtersGroup).setName("Calendar"),
+      [
+        { value: "", label: "Any calendar" },
+        { value: "memento", label: "Memento" },
+        ...this.plugin.settings.externalCalendarSources.map((source) => ({
+          value: source.id,
+          label: source.name,
+        })),
+      ],
+      filters.sourceId,
+      (value) => {
+        filters.sourceId = value;
+        this.shouldRestoreSearchFocus = true;
+        this.searchCursorPosition = null;
+        void this.plugin.saveSettings();
+      },
+    );
 
-    new Setting(filtersGroup)
-      .setName("Date range")
-      .addDropdown((dropdown) =>
-        dropdown
-          .addOption("upcoming", "Upcoming")
-          .addOption("week", "Next 7 days")
-          .addOption("month", "Next month")
-          .addOption("all", "All")
-          .setValue(filters.dateRange)
-          .onChange((value) => {
-            filters.dateRange = value as typeof filters.dateRange;
-            this.shouldRestoreSearchFocus = true;
-            this.searchCursorPosition = null;
-            void this.plugin.saveSettings();
-          }),
-      );
+    this.addThemedDropdown(
+      new Setting(filtersGroup).setName("Date range"),
+      [
+        { value: "upcoming", label: "Upcoming" },
+        { value: "week", label: "Next 7 days" },
+        { value: "month", label: "Next month" },
+        { value: "all", label: "All" },
+      ],
+      filters.dateRange,
+      (value) => {
+        filters.dateRange = value as typeof filters.dateRange;
+        this.shouldRestoreSearchFocus = true;
+        this.searchCursorPosition = null;
+        void this.plugin.saveSettings();
+      },
+    );
 
-    new Setting(filtersGroup)
-      .setName("Show completed")
-      .addToggle((toggle) =>
-        toggle.setValue(filters.includeCompleted).onChange((value) => {
-          filters.includeCompleted = value;
-          this.shouldRestoreSearchFocus = true;
-          this.searchCursorPosition = null;
-          void this.plugin.saveSettings();
-        }),
-      );
+    new Setting(filtersGroup).setName("Show completed").addToggle((toggle) =>
+      toggle.setValue(filters.includeCompleted).onChange((value) => {
+        filters.includeCompleted = value;
+        this.shouldRestoreSearchFocus = true;
+        this.searchCursorPosition = null;
+        void this.plugin.saveSettings();
+      }),
+    );
 
-    new Setting(filtersGroup)
-      .setName("Show archived")
-      .addToggle((toggle) =>
-        toggle.setValue(filters.includeArchived).onChange((value) => {
-          filters.includeArchived = value;
-          this.shouldRestoreSearchFocus = true;
-          this.searchCursorPosition = null;
-          void this.plugin.saveSettings();
-        }),
-      );
+    new Setting(filtersGroup).setName("Show archived").addToggle((toggle) =>
+      toggle.setValue(filters.includeArchived).onChange((value) => {
+        filters.includeArchived = value;
+        this.shouldRestoreSearchFocus = true;
+        this.searchCursorPosition = null;
+        void this.plugin.saveSettings();
+      }),
+    );
+  }
+
+  /**
+   * Render a fully theme-styled dropdown (button + Obsidian Menu) instead of a
+   * native <select>, whose open option list is rendered by the OS and cannot be
+   * themed with CSS. The Menu honours the user's Obsidian theme.
+   */
+  private addThemedDropdown(
+    setting: Setting,
+    options: { value: string; label: string }[],
+    current: string,
+    onChange: (value: string) => void,
+  ): void {
+    const selected =
+      options.find((option) => option.value === current) ?? options[0];
+
+    const button = setting.controlEl.createEl("button", {
+      cls: "memento-dropdown",
+      attr: { type: "button" },
+    });
+    button.createSpan({
+      cls: "memento-dropdown-label",
+      text: selected?.label ?? "",
+    });
+    const arrow = button.createSpan({ cls: "memento-dropdown-arrow" });
+    setIcon(arrow, "chevron-down");
+
+    button.addEventListener("click", () => {
+      const menu = new Menu();
+      for (const option of options) {
+        menu.addItem((item) =>
+          item
+            .setTitle(option.label)
+            .setChecked(option.value === current)
+            .onClick(() => {
+              if (option.value !== current) onChange(option.value);
+            }),
+        );
+      }
+      const rect = button.getBoundingClientRect();
+      menu.showAtPosition({ x: rect.left, y: rect.bottom + 4 });
+    });
   }
 
   private renderEntry(ul: HTMLElement, entry: TimelineEntry): void {
@@ -487,7 +541,10 @@ export class TimelineView extends ItemView {
     }
   }
 
-  private renderRemaining(container: HTMLElement, occurrenceDate: string): void {
+  private renderRemaining(
+    container: HTMLElement,
+    occurrenceDate: string,
+  ): void {
     const today = new Date();
     const todayStr = `${today.getFullYear()}-${(today.getMonth() + 1)
       .toString()
@@ -517,7 +574,10 @@ export class TimelineView extends ItemView {
   }
 
   private async openEntryActions(entry: TimelineEntry): Promise<void> {
-    const filePath = this.plugin.getEventNotePath(entry.event, entry.occurrenceDate);
+    const filePath = this.plugin.getEventNotePath(
+      entry.event,
+      entry.occurrenceDate,
+    );
     const fileExists = await this.plugin.app.vault.adapter.exists(filePath);
 
     new EventActionModal(this.plugin.app, entry, fileExists, {
@@ -528,13 +588,16 @@ export class TimelineView extends ItemView {
         void this.plugin.createNoteForEvent(entry.event, entry.occurrenceDate);
       },
       duplicate: () => {
-        if (isMementoEvent(entry.event)) this.plugin.duplicateEvent(entry.event);
+        if (isMementoEvent(entry.event))
+          this.plugin.duplicateEvent(entry.event);
       },
       complete: () => {
-        if (isMementoEvent(entry.event)) this.plugin.setEventStatus(entry.event.id, "completed");
+        if (isMementoEvent(entry.event))
+          this.plugin.setEventStatus(entry.event.id, "completed");
       },
       archive: () => {
-        if (isMementoEvent(entry.event)) this.plugin.setEventStatus(entry.event.id, "archived");
+        if (isMementoEvent(entry.event))
+          this.plugin.setEventStatus(entry.event.id, "archived");
       },
       deleteEvent: () => {
         this.plugin.deleteEvent(entry.event.id);

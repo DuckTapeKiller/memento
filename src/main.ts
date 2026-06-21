@@ -424,7 +424,7 @@ export default class MementoPlugin extends Plugin {
     const filename = `memento-export-${stamp}.json`;
     const payload = JSON.stringify(
       {
-        version: "1.0.4",
+        version: "1.0.5",
         exportedAt: new Date().toISOString(),
         events: this.settings.events,
         externalCalendarSources: this.settings.externalCalendarSources,

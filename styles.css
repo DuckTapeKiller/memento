@@ -257,25 +257,15 @@ body .memento-time-input::-webkit-datetime-edit-ampm-field:focus {
 }
 
 .memento-timeline-controls {
-  padding: 0.75rem 1rem;
+  padding: 0.3rem 1rem;
   border-bottom: var(--border-width) solid var(--background-modifier-border);
-  background: var(--background-primary);
+  background: var(--background-secondary);
 }
 
 .memento-search-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 0.75rem;
-  margin-bottom: 0.3rem;
-}
-
-.memento-filters-label {
-  font-size: var(--font-ui-small);
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--text-muted);
+  justify-content: flex-end;
 }
 
 .memento-search-button {
@@ -388,7 +378,7 @@ body .memento-time-input::-webkit-datetime-edit-ampm-field:focus {
 .memento-filters-group .setting-item {
   border: 1px solid var(--background-modifier-border);
   border-radius: var(--memento-radius);
-  background: var(--background-primary);
+  background: var(--background-secondary);
   padding: 0.75rem 0.9rem;
   box-shadow: 0 2px 6px color-mix(in srgb, var(--memento-accent) 6%, transparent);
   align-items: center;
@@ -419,8 +409,55 @@ body .memento-time-input::-webkit-datetime-edit-ampm-field:focus {
   gap: 0.5rem;
   padding: 0.25rem 0.45rem;
   border-radius: var(--memento-radius-sm);
-  background: var(--background-primary);
+  background: var(--background-secondary);
   border: 1px solid var(--background-modifier-border);
+}
+
+.memento-filters-group .memento-dropdown {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem;
+  min-width: 6rem;
+  padding: 0.2rem 0.3rem;
+  border: none;
+  border-radius: var(--memento-radius-sm);
+  background: transparent;
+  box-shadow: none;
+  color: var(--text-normal);
+  font-size: var(--font-ui-small);
+  font-family: var(--font-interface);
+  cursor: pointer;
+  transition: background 0.2s ease;
+}
+
+.memento-filters-group .memento-dropdown:hover {
+  background: var(--background-modifier-hover);
+}
+
+.memento-filters-group .memento-dropdown:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--memento-accent) 35%, transparent);
+}
+
+.memento-dropdown-label {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.memento-dropdown-arrow {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+
+.memento-dropdown-arrow svg {
+  width: 14px;
+  height: 14px;
 }
 
 .memento-timeline-controls .setting-item {

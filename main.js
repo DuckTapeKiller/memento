@@ -673,7 +673,10 @@ var EventActionModal = class extends import_obsidian2.Modal {
       contentEl.createEl("p", { text: event.context });
     }
     if (isExternalEvent(event) && event.location) {
-      contentEl.createEl("p", { text: event.location, cls: "setting-item-description" });
+      contentEl.createEl("p", {
+        text: event.location,
+        cls: "setting-item-description"
+      });
     }
     const setting = new import_obsidian2.Setting(contentEl).addButton(
       (btn) => btn.setButtonText("Cancel").onClick(() => {
@@ -758,6 +761,7 @@ var TimelineView = class extends import_obsidian2.ItemView {
     super(leaf);
     this.shouldRestoreSearchFocus = false;
     this.searchCursorPosition = null;
+    this.filtersExpanded = false;
     this.plugin = plugin;
   }
   getViewType() {
@@ -804,7 +808,6 @@ var TimelineView = class extends import_obsidian2.ItemView {
     const filters = this.plugin.settings.timelineFilters;
     const controls = container.createDiv({ cls: "memento-timeline-controls" });
     const headerRow = controls.createDiv({ cls: "memento-search-header" });
-    headerRow.createSpan({ cls: "memento-filters-label", text: "Filters" });
     const searchButton = headerRow.createEl("button", {
       cls: "memento-search-button",
       attr: { type: "button" }
@@ -822,9 +825,11 @@ var TimelineView = class extends import_obsidian2.ItemView {
       attr: { type: "button", "aria-label": "Clear search" }
     });
     clearButton.textContent = "\xD7";
-    const filtersGroup = filtersBody.createDiv({ cls: "memento-filters-group" });
-    const hasActiveFilters = filters.search.trim().length > 0 || filters.source !== "all" || filters.sourceId !== "" || filters.dateRange !== "upcoming" || filters.includeCompleted || filters.includeArchived;
+    const filtersGroup = filtersBody.createDiv({
+      cls: "memento-filters-group"
+    });
     const applyVisibility = (visible, options = {}) => {
+      this.filtersExpanded = visible;
       filtersBody.toggleClass("is-visible", visible);
       searchButton.toggleClass("is-active", visible);
       searchButton.textContent = visible ? "Hide filters" : "Show filters";
@@ -844,7 +849,7 @@ var TimelineView = class extends import_obsidian2.ItemView {
         }, 0);
       }
     };
-    applyVisibility(hasActiveFilters, {
+    applyVisibility(this.filtersExpanded, {
       focus: this.shouldRestoreSearchFocus
     });
     searchButton.addEventListener("click", () => {
@@ -869,36 +874,55 @@ var TimelineView = class extends import_obsidian2.ItemView {
         applyVisibility(false);
       }
     });
-    new import_obsidian2.Setting(filtersGroup).setName("Source").addDropdown((dropdown) => {
-      dropdown.addOption("all", "All sources").addOption("memento", "Memento only").addOption("external", "External only").setValue(filters.source).onChange((value) => {
+    this.addThemedDropdown(
+      new import_obsidian2.Setting(filtersGroup).setName("Source"),
+      [
+        { value: "all", label: "All sources" },
+        { value: "memento", label: "Memento only" },
+        { value: "external", label: "External only" }
+      ],
+      filters.source,
+      (value) => {
         filters.source = value;
         filters.sourceId = "";
         this.shouldRestoreSearchFocus = true;
         this.searchCursorPosition = null;
         void this.plugin.saveSettings();
-      });
-    });
-    new import_obsidian2.Setting(filtersGroup).setName("Calendar").addDropdown((dropdown) => {
-      dropdown.addOption("", "Any calendar");
-      dropdown.addOption("memento", "Memento");
-      for (const source of this.plugin.settings.externalCalendarSources) {
-        dropdown.addOption(source.id, source.name);
       }
-      dropdown.setValue(filters.sourceId);
-      dropdown.onChange((value) => {
+    );
+    this.addThemedDropdown(
+      new import_obsidian2.Setting(filtersGroup).setName("Calendar"),
+      [
+        { value: "", label: "Any calendar" },
+        { value: "memento", label: "Memento" },
+        ...this.plugin.settings.externalCalendarSources.map((source) => ({
+          value: source.id,
+          label: source.name
+        }))
+      ],
+      filters.sourceId,
+      (value) => {
         filters.sourceId = value;
         this.shouldRestoreSearchFocus = true;
         this.searchCursorPosition = null;
         void this.plugin.saveSettings();
-      });
-    });
-    new import_obsidian2.Setting(filtersGroup).setName("Date range").addDropdown(
-      (dropdown) => dropdown.addOption("upcoming", "Upcoming").addOption("week", "Next 7 days").addOption("month", "Next month").addOption("all", "All").setValue(filters.dateRange).onChange((value) => {
+      }
+    );
+    this.addThemedDropdown(
+      new import_obsidian2.Setting(filtersGroup).setName("Date range"),
+      [
+        { value: "upcoming", label: "Upcoming" },
+        { value: "week", label: "Next 7 days" },
+        { value: "month", label: "Next month" },
+        { value: "all", label: "All" }
+      ],
+      filters.dateRange,
+      (value) => {
         filters.dateRange = value;
         this.shouldRestoreSearchFocus = true;
         this.searchCursorPosition = null;
         void this.plugin.saveSettings();
-      })
+      }
     );
     new import_obsidian2.Setting(filtersGroup).setName("Show completed").addToggle(
       (toggle) => toggle.setValue(filters.includeCompleted).onChange((value) => {
@@ -916,6 +940,36 @@ var TimelineView = class extends import_obsidian2.ItemView {
         void this.plugin.saveSettings();
       })
     );
+  }
+  /**
+   * Render a fully theme-styled dropdown (button + Obsidian Menu) instead of a
+   * native <select>, whose open option list is rendered by the OS and cannot be
+   * themed with CSS. The Menu honours the user's Obsidian theme.
+   */
+  addThemedDropdown(setting, options, current, onChange) {
+    const selected = options.find((option) => option.value === current) ?? options[0];
+    const button = setting.controlEl.createEl("button", {
+      cls: "memento-dropdown",
+      attr: { type: "button" }
+    });
+    button.createSpan({
+      cls: "memento-dropdown-label",
+      text: selected?.label ?? ""
+    });
+    const arrow = button.createSpan({ cls: "memento-dropdown-arrow" });
+    (0, import_obsidian2.setIcon)(arrow, "chevron-down");
+    button.addEventListener("click", () => {
+      const menu = new import_obsidian2.Menu();
+      for (const option of options) {
+        menu.addItem(
+          (item) => item.setTitle(option.label).setChecked(option.value === current).onClick(() => {
+            if (option.value !== current) onChange(option.value);
+          })
+        );
+      }
+      const rect = button.getBoundingClientRect();
+      menu.showAtPosition({ x: rect.left, y: rect.bottom + 4 });
+    });
   }
   renderEntry(ul, entry) {
     const eventLi = ul.createEl("li", {
@@ -1005,7 +1059,10 @@ var TimelineView = class extends import_obsidian2.ItemView {
     }
   }
   async openEntryActions(entry) {
-    const filePath = this.plugin.getEventNotePath(entry.event, entry.occurrenceDate);
+    const filePath = this.plugin.getEventNotePath(
+      entry.event,
+      entry.occurrenceDate
+    );
     const fileExists = await this.plugin.app.vault.adapter.exists(filePath);
     new EventActionModal(this.plugin.app, entry, fileExists, {
       edit: () => {
@@ -1015,13 +1072,16 @@ var TimelineView = class extends import_obsidian2.ItemView {
         void this.plugin.createNoteForEvent(entry.event, entry.occurrenceDate);
       },
       duplicate: () => {
-        if (isMementoEvent(entry.event)) this.plugin.duplicateEvent(entry.event);
+        if (isMementoEvent(entry.event))
+          this.plugin.duplicateEvent(entry.event);
       },
       complete: () => {
-        if (isMementoEvent(entry.event)) this.plugin.setEventStatus(entry.event.id, "completed");
+        if (isMementoEvent(entry.event))
+          this.plugin.setEventStatus(entry.event.id, "completed");
       },
       archive: () => {
-        if (isMementoEvent(entry.event)) this.plugin.setEventStatus(entry.event.id, "archived");
+        if (isMementoEvent(entry.event))
+          this.plugin.setEventStatus(entry.event.id, "archived");
       },
       deleteEvent: () => {
         this.plugin.deleteEvent(entry.event.id);
@@ -2318,7 +2378,7 @@ ${event.context}
     const filename = `memento-export-${stamp}.json`;
     const payload = JSON.stringify(
       {
-        version: "1.0.4",
+        version: "1.0.5",
         exportedAt: (/* @__PURE__ */ new Date()).toISOString(),
         events: this.settings.events,
         externalCalendarSources: this.settings.externalCalendarSources
