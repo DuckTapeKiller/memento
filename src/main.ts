@@ -1,4 +1,12 @@
-import { Notice, Plugin, TFile, WorkspaceLeaf } from "obsidian";
+import {
+  Debouncer,
+  Notice,
+  Platform,
+  Plugin,
+  TFile,
+  WorkspaceLeaf,
+  debounce,
+} from "obsidian";
 import {
   DEFAULT_SETTINGS,
   DEFAULT_TIMELINE_FILTERS,
@@ -7,8 +15,11 @@ import {
   ExternalCalendarSource,
   MementoEvent,
   MementoSettings,
+  TimelineEntry,
   VIEW_TYPE_TIMELINE,
+  formatTimeDisplay,
   generateId,
+  getPendingEntries,
   getTodayStr,
   normalizeEvent,
 } from "./types";
@@ -21,6 +32,23 @@ import { syncExternalCalendarSource } from "./IcsSync";
 export default class MementoPlugin extends Plugin {
   settings!: MementoSettings;
   private decorator!: CalendarDecorator;
+  private ribbonEl: HTMLElement | null = null;
+  private statusBarEl: HTMLElement | null = null;
+  private statusBarCountEl: HTMLElement | null = null;
+  private indicatorTimeoutId: number | null = null;
+
+  /**
+   * Coalesced settings write. The timeline's search box changes settings on
+   * every keystroke, and each save is a full data.json write plus a recurrence
+   * expansion — far too much work to do per character.
+   */
+  saveSettingsDebounced: Debouncer<[], void> = debounce(
+    () => {
+      void this.saveSettings();
+    },
+    400,
+    true,
+  );
 
   async onload(): Promise<void> {
     await this.loadSettings();
@@ -64,20 +92,31 @@ export default class MementoPlugin extends Plugin {
       },
     });
 
-    this.addRibbonIcon("calendar-clock", "Memento — Event Timeline", () => {
-      void this.activateTimelineView();
-    });
+    this.ribbonEl = this.addRibbonIcon(
+      "calendar-clock",
+      "Memento event timeline",
+      () => {
+        void this.activateTimelineView();
+      },
+    );
+    this.ribbonEl.addClass("memento-ribbon-icon");
+
+    this.createStatusBarItem();
 
     this.app.workspace.onLayoutReady(() => {
       this.decorator.start();
-      void this.activateTimelineView();
+      if (this.settings.openTimelineOnStartup) {
+        void this.activateTimelineView();
+      }
       void this.syncDueExternalCalendars();
+      this.updatePendingIndicators();
     });
 
     this.registerInterval(
       window.setInterval(() => {
         this.refreshTimeline();
         this.decorator.refresh();
+        this.updatePendingIndicators();
         void this.syncDueExternalCalendars();
       }, 60 * 1000),
     );
@@ -88,9 +127,16 @@ export default class MementoPlugin extends Plugin {
       this.decorator.destroy();
     }
 
-    this.app.workspace.getLeavesOfType(VIEW_TYPE_TIMELINE).forEach((leaf) => {
-      leaf.detach();
-    });
+    if (this.indicatorTimeoutId !== null) {
+      window.clearTimeout(this.indicatorTimeoutId);
+      this.indicatorTimeoutId = null;
+    }
+
+    this.saveSettingsDebounced.cancel();
+
+    // Deliberately no leaf.detach() here: Obsidian persists the workspace
+    // layout itself, and detaching on unload is what made the timeline
+    // reappear on every start regardless of how the user left it.
   }
 
   // ─── Settings Persistence ────────────────────────────────────────
@@ -106,6 +152,9 @@ export default class MementoPlugin extends Plugin {
       timelineFilters: {
         ...DEFAULT_TIMELINE_FILTERS,
         ...(data.timelineFilters || {}),
+        // Never restore a search term: a query typed weeks ago silently
+        // hiding events on startup is indistinguishable from a bug.
+        search: "",
       },
       externalCalendarSources: data.externalCalendarSources || [],
       externalEventsCache: data.externalEventsCache || [],
@@ -118,6 +167,7 @@ export default class MementoPlugin extends Plugin {
     await this.saveData(this.settings);
     this.refreshTimeline();
     this.decorator?.refresh();
+    this.updatePendingIndicators();
   }
 
   // ─── Event Management ────────────────────────────────────────────
@@ -275,24 +325,19 @@ export default class MementoPlugin extends Plugin {
     event: MementoEvent | ExternalCalendarEvent,
     occurrenceDate: string,
   ): string {
-    const isEs = this.settings.frontmatterLanguage === "es";
-    const titleKey = isEs ? "Título" : "Title";
-    const dateKey = isEs ? "Fecha" : "Date";
-    const contextKey = isEs ? "Contexto" : "Context";
-    const sourceKey = isEs ? "Fuente" : "Source";
-    const locationKey = isEs ? "Ubicación" : "Location";
+    const keys = FRONTMATTER_KEYS[this.settings.frontmatterLanguage];
 
     const dateTimeStr = event.time ? `${occurrenceDate} ${event.time}` : occurrenceDate;
     const source = "sourceId" in event ? "External calendar" : "Memento";
     const location = "location" in event ? event.location || "" : "";
 
     let content = "---\n";
-    content += `${titleKey}: "${escapeYaml(event.title)}"\n`;
-    content += `${dateKey}: ${dateTimeStr}\n`;
-    content += `${contextKey}: "${escapeYaml(event.context || "")}"\n`;
-    content += `${sourceKey}: "${source}"\n`;
+    content += `${keys.title}: "${escapeYaml(event.title)}"\n`;
+    content += `${keys.date}: ${dateTimeStr}\n`;
+    content += `${keys.context}: "${escapeYaml(event.context || "")}"\n`;
+    content += `${keys.source}: "${source}"\n`;
     if (location) {
-      content += `${locationKey}: "${escapeYaml(location)}"\n`;
+      content += `${keys.location}: "${escapeYaml(location)}"\n`;
     }
     content += "---\n\n";
     content += `# ${event.title}\n`;
@@ -307,16 +352,32 @@ export default class MementoPlugin extends Plugin {
     event: MementoEvent | ExternalCalendarEvent,
     occurrenceDate: string,
   ): Promise<void> {
+    const language = this.settings.frontmatterLanguage;
+    const keys = FRONTMATTER_KEYS[language];
+    const stale = FRONTMATTER_KEYS[language === "es" ? "en" : "es"];
     const dateTimeStr = event.time ? `${occurrenceDate} ${event.time}` : occurrenceDate;
-    await this.app.fileManager.processFrontMatter(file, (frontmatter) => {
-      frontmatter.Title = event.title;
-      frontmatter.Date = dateTimeStr;
-      frontmatter.Context = event.context || "";
-      frontmatter.Source = "sourceId" in event ? "External calendar" : "Memento";
-      if ("location" in event && event.location) {
-        frontmatter.Location = event.location;
-      }
-    });
+
+    await this.app.fileManager.processFrontMatter(
+      file,
+      (frontmatter: Record<string, unknown>) => {
+        // This used to write English keys whatever the language setting said, so
+        // reopening a Spanish note left it holding both sets of properties, free
+        // to drift apart. Clearing the inactive language's keys also repairs
+        // notes that already picked up the duplicates.
+        for (const key of Object.values(stale)) {
+          delete frontmatter[key];
+        }
+
+        frontmatter[keys.title] = event.title;
+        frontmatter[keys.date] = dateTimeStr;
+        frontmatter[keys.context] = event.context || "";
+        frontmatter[keys.source] =
+          "sourceId" in event ? "External calendar" : "Memento";
+        if ("location" in event && event.location) {
+          frontmatter[keys.location] = event.location;
+        }
+      },
+    );
   }
 
   private rememberNotePath(
@@ -424,7 +485,7 @@ export default class MementoPlugin extends Plugin {
     const filename = `memento-export-${stamp}.json`;
     const payload = JSON.stringify(
       {
-        version: "1.0.5",
+        version: this.manifest.version,
         exportedAt: new Date().toISOString(),
         events: this.settings.events,
         externalCalendarSources: this.settings.externalCalendarSources,
@@ -450,6 +511,97 @@ export default class MementoPlugin extends Plugin {
     return imported.length;
   }
 
+  // ─── Pending Indicators ──────────────────────────────────────────
+
+  /**
+   * Status bar item showing the pending event count. The status bar is not
+   * available on mobile, which is why the ribbon badge exists alongside it.
+   */
+  private createStatusBarItem(): void {
+    if (Platform.isMobile) return;
+
+    const el = this.addStatusBarItem();
+    el.addClass("memento-status-bar-item", "mod-clickable");
+
+    const iconEl = el.createSpan({ cls: "memento-status-bar-icon" });
+    renderCalendarCheckIcon(iconEl);
+
+    this.statusBarCountEl = el.createSpan({ cls: "memento-status-bar-count" });
+    el.addEventListener("click", () => {
+      void this.activateTimelineView();
+    });
+
+    this.statusBarEl = el;
+  }
+
+  getPendingEntries(): TimelineEntry[] {
+    return getPendingEntries({
+      events: this.settings.events,
+      externalEvents: this.settings.externalEventsCache,
+      externalSources: this.settings.externalCalendarSources,
+      hiddenExternalEventIds: this.settings.hiddenExternalEventIds,
+      countWindow: this.settings.pendingCountWindow,
+      includeOverdue: this.settings.pendingIncludeOverdue,
+    });
+  }
+
+  /**
+   * Debounced: saveSettings() calls this, and the timeline's search box saves
+   * on every keystroke, so a burst of saves must not each pay for a full
+   * recurrence expansion.
+   */
+  updatePendingIndicators(): void {
+    if (this.indicatorTimeoutId !== null) {
+      window.clearTimeout(this.indicatorTimeoutId);
+    }
+    this.indicatorTimeoutId = window.setTimeout(() => {
+      this.indicatorTimeoutId = null;
+      this.renderPendingIndicators();
+    }, 150);
+  }
+
+  private renderPendingIndicators(): void {
+    const entries = this.getPendingEntries();
+    const count = entries.length;
+    const tooltip = this.buildPendingTooltip(entries);
+
+    if (this.statusBarEl && this.statusBarCountEl) {
+      const visible = this.settings.showStatusBarCount && count > 0;
+      this.statusBarEl.toggleClass("memento-is-hidden", !visible);
+      this.statusBarCountEl.setText(count.toString());
+      this.statusBarEl.setAttribute("aria-label", tooltip);
+    }
+
+    if (this.ribbonEl) {
+      const visible = this.settings.showRibbonBadge && count > 0;
+      this.ribbonEl.toggleClass("memento-has-pending", visible);
+      this.ribbonEl.dataset.mementoPending = count > 99 ? "99+" : count.toString();
+      this.ribbonEl.setAttribute(
+        "aria-label",
+        count > 0
+          ? `Memento event timeline (${count} pending)`
+          : "Memento event timeline",
+      );
+    }
+  }
+
+  private buildPendingTooltip(entries: TimelineEntry[]): string {
+    if (entries.length === 0) return "Memento: no pending events";
+
+    const lines = entries.slice(0, 3).map((entry) => {
+      const time = entry.occurrenceTime
+        ? ` ${formatTimeDisplay(entry.occurrenceTime)}`
+        : "";
+      return `${entry.occurrenceDate}${time} — ${entry.event.title}`;
+    });
+
+    if (entries.length > 3) {
+      lines.push(`+${entries.length - 3} more`);
+    }
+
+    return lines.join("\n");
+  }
+
   // ─── Timeline View ───────────────────────────────────────────────
 
   async activateTimelineView(): Promise<void> {
@@ -467,8 +619,21 @@ export default class MementoPlugin extends Plugin {
       }
     }
 
-    if (leaf) {
-      void workspace.revealLeaf(leaf);
+    // Reloading the plugin (disable then enable, as a version update does) can
+    // start a second activation while the first setViewState is still in
+    // flight; each one sees no existing leaf and creates its own, leaving
+    // stacked duplicate panels behind. Keep a single live view.
+    const existing = workspace.getLeavesOfType(VIEW_TYPE_TIMELINE);
+    const keep =
+      existing.find((item) => item.view instanceof TimelineView) ??
+      existing[0] ??
+      leaf;
+    for (const duplicate of existing) {
+      if (duplicate !== keep) duplicate.detach();
+    }
+
+    if (keep) {
+      void workspace.revealLeaf(keep);
     }
   }
 
@@ -481,6 +646,62 @@ export default class MementoPlugin extends Plugin {
     }
   }
 }
+
+/**
+ * Draw Lucide's current `calendar-check` explicitly.
+ *
+ * setIcon() would be simpler, but the glyph then depends on whichever Lucide
+ * version the host app bundles — Obsidian 1.8 still ships the older artwork
+ * (rect y=4, "M3 10h18"), which does not match the icon this plugin is
+ * specified to show. Drawing the paths keeps it identical on every version.
+ */
+function renderCalendarCheckIcon(parent: HTMLElement): void {
+  const svg = parent.createSvg("svg", {
+    // Array form on purpose: createSvg feeds `cls` straight to classList.add(),
+    // which rejects a space-separated string despite what the typings claim.
+    cls: ["svg-icon", "memento-calendar-check"],
+    attr: {
+      xmlns: "http://www.w3.org/2000/svg",
+      viewBox: "0 0 24 24",
+      fill: "none",
+      stroke: "currentColor",
+      "stroke-width": "2",
+      "stroke-linecap": "round",
+      "stroke-linejoin": "round",
+    },
+  });
+  svg.createSvg("path", { attr: { d: "M8 2v3" } });
+  svg.createSvg("path", { attr: { d: "M16 2v3" } });
+  svg.createSvg("rect", {
+    attr: { x: "3", y: "3", width: "18", height: "18", rx: "2" },
+  });
+  svg.createSvg("path", { attr: { d: "M3 9h18" } });
+  svg.createSvg("path", { attr: { d: "m9 15 2 2 4-4" } });
+}
+
+/**
+ * Frontmatter property names per language. Both the note template and the
+ * refresh-on-reopen path read from here so they can never disagree.
+ */
+const FRONTMATTER_KEYS: Record<
+  "en" | "es",
+  { title: string; date: string; context: string; source: string; location: string }
+> = {
+  en: {
+    title: "Title",
+    date: "Date",
+    context: "Context",
+    source: "Source",
+    location: "Location",
+  },
+  es: {
+    title: "Título",
+    date: "Fecha",
+    context: "Contexto",
+    source: "Fuente",
+    location: "Ubicación",
+  },
+};
 
 function escapeYaml(value: string): string {
   return value.replace(/"/g, '\\"').replace(/\n/g, "\\n");

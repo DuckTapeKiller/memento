@@ -860,3 +860,90 @@ body .memento-settings-danger-heading {
 .memento-timeline-container::-webkit-scrollbar-thumb:hover {
   background: var(--text-faint);
 }
+
+/* ================================================================= */
+/*  8. PENDING INDICATORS (status bar + ribbon badge)                */
+/* ================================================================= */
+
+.status-bar .memento-status-bar-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.status-bar .memento-status-bar-item.memento-is-hidden {
+  display: none;
+}
+
+.memento-status-bar-icon {
+  display: flex;
+  align-items: center;
+}
+
+.memento-status-bar-icon .svg-icon {
+  width: 14px;
+  height: 14px;
+}
+
+.memento-status-bar-count {
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+/* Badge on the ribbon icon — the status bar is unavailable on mobile,
+   so this is the indicator that works on every platform. */
+.memento-ribbon-icon {
+  position: relative;
+}
+
+.memento-ribbon-icon.memento-has-pending::after {
+  content: attr(data-memento-pending);
+  position: absolute;
+  top: 1px;
+  right: 1px;
+  min-width: 10px;
+  height: 10px;
+  padding: 0 2px;
+  border-radius: 5px;
+  background-color: var(--interactive-accent);
+  color: var(--text-on-accent);
+  font-size: 7px;
+  font-weight: var(--font-bold);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.2px;
+  line-height: 10px;
+  text-align: center;
+  pointer-events: none;
+  box-shadow: 0 0 0 1.5px var(--background-secondary);
+}
+
+/* ================================================================= */
+/*  9. TIMELINE PAGING FOOTER                                        */
+/* ================================================================= */
+
+.memento-timeline-more {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.75rem 0 1.5rem;
+}
+
+.memento-timeline-more-count {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  text-align: center;
+}
+
+.memento-timeline-more-btn {
+  cursor: pointer;
+}
+
+/* Imperative settings sections hosted inside a definition row. */
+.memento-settings-section.setting-item {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border-top: none;
+}

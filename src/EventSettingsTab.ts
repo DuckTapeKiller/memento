@@ -1,4 +1,12 @@
-import { App, Notice, PluginSettingTab, Setting, setIcon } from "obsidian";
+import {
+  App,
+  Notice,
+  Platform,
+  PluginSettingTab,
+  Setting,
+  SettingDefinitionItem,
+  setIcon,
+} from "obsidian";
 import type MementoPlugin from "./main";
 import {
   ExternalCalendarSource,
@@ -19,82 +27,148 @@ export class EventSettingsTab extends PluginSettingTab {
     this.plugin = plugin;
   }
 
-  display(): void {
-    this.render();
+  /**
+   * Declarative mirror of the settings this tab renders, so they are reachable
+   * from Obsidian 1.13's settings search. Rendering still goes through
+   * display() — these definitions describe the same keys, and the framework
+   * reads and writes them through getControlValue/setControlValue below.
+   */
+  getSettingDefinitions(): SettingDefinitionItem[] {
+    return [
+      {
+        type: "group",
+        heading: "Startup and indicators",
+        items: [
+          {
+            name: "Open timeline on startup",
+            desc: "Force the timeline panel open every time Obsidian starts. When off, Obsidian simply restores the panel if you left it open.",
+            control: { type: "toggle", key: "openTimelineOnStartup" },
+          },
+          {
+            name: "Show pending count in status bar",
+            desc: "Show a calendar icon and the pending event count in the status bar. Click it to open the timeline. Not available on mobile.",
+            visible: () => !Platform.isMobile,
+            control: { type: "toggle", key: "showStatusBarCount" },
+          },
+          {
+            name: "Show pending count on ribbon icon",
+            desc: "Show the pending event count as a badge on the Memento ribbon icon. Works on desktop and mobile.",
+            control: { type: "toggle", key: "showRibbonBadge" },
+          },
+          {
+            name: "Pending count covers",
+            desc: "How far ahead the pending count looks.",
+            control: {
+              type: "dropdown",
+              key: "pendingCountWindow",
+              options: {
+                today: "Today only",
+                week: "Next 7 days",
+                month: "Next 30 days",
+                all: "All upcoming",
+              },
+            },
+          },
+          {
+            name: "Include overdue events",
+            desc: "Also count one-time events that are past due and still active, plus events earlier today whose time has passed. Recurring and external events are never counted as overdue.",
+            control: { type: "toggle", key: "pendingIncludeOverdue" },
+          },
+        ],
+      },
+      {
+        type: "group",
+        heading: "Timeline",
+        items: [
+          {
+            name: "Timeline view mode",
+            desc: "Choose which events to show in the timeline view.",
+            control: {
+              type: "dropdown",
+              key: "timelineViewMode",
+              options: {
+                all: "Show all upcoming events",
+                month: "Show events for current month only",
+              },
+            },
+          },
+          {
+            name: "Show past events",
+            desc: "Display expired one-time events in the list below.",
+            control: { type: "toggle", key: "showPastEventsInSettings" },
+          },
+          {
+            name: "Frontmatter language",
+            desc: "Language for the properties when creating a note from an event.",
+            aliases: ["Title", "Date", "Context", "Fecha", "Contexto"],
+            control: {
+              type: "dropdown",
+              key: "frontmatterLanguage",
+              options: {
+                en: "English (Title, Date, Context)",
+                es: "Spanish (Título, Fecha, Contexto)",
+              },
+            },
+          },
+          {
+            name: "Event notes folder",
+            desc: "Folder where event notes will be created. Leave empty for vault root.",
+            control: {
+              type: "text",
+              key: "eventNoteFolder",
+              placeholder: "E.g. Calendar/events",
+            },
+          },
+        ],
+      },
+      // The remaining sections are dynamic collections rather than fixed
+      // key-backed controls, so they are drawn imperatively into the row
+      // Obsidian gives them.
+      this.imperativeSection("External calendars", (host) =>
+        this.renderExternalCalendars(host),
+      ),
+      this.imperativeSection("Data management", (host) =>
+        this.renderDataManagement(host),
+      ),
+      this.imperativeSection("Events", (host) => this.renderEvents(host)),
+    ];
   }
 
-  private render(): void {
-    const { containerEl } = this;
-    containerEl.empty();
-    containerEl.addClass("memento-settings");
-
-    this.renderTimelineSettings(containerEl);
-    this.renderExternalCalendars(containerEl);
-    this.renderDataManagement(containerEl);
-    this.renderEvents(containerEl);
+  /**
+   * Wraps an imperative section as a setting definition. The generated row is
+   * hidden and the section is drawn into a container of its own, removed again
+   * on teardown so repeated renders cannot stack duplicates.
+   */
+  private imperativeSection(
+    name: string,
+    draw: (host: HTMLElement) => void,
+  ): SettingDefinitionItem {
+    return {
+      name,
+      render: (setting: Setting) => {
+        // Obsidian owns this row and discards anything written outside it, so
+        // the section is drawn into the row itself, stripped back to a plain
+        // block container first.
+        setting.settingEl.empty();
+        setting.settingEl.addClass("memento-settings-section");
+        draw(setting.settingEl);
+      },
+    };
   }
 
-  private renderTimelineSettings(containerEl: HTMLElement): void {
-    new Setting(containerEl).setName("Timeline").setHeading();
+  getControlValue(key: string): unknown {
+    return (this.plugin.settings as unknown as Record<string, unknown>)[key];
+  }
 
-    new Setting(containerEl)
-      .setName("Timeline view mode")
-      .setDesc("Choose which events to show in the timeline view")
-      .addDropdown((dropdown) =>
-        dropdown
-          .addOption("all", "Show all upcoming events")
-          .addOption("month", "Show events for current month only")
-          .setValue(this.plugin.settings.timelineViewMode)
-          .onChange(async (value: string) => {
-            this.plugin.settings.timelineViewMode = value as "all" | "month";
-            await this.plugin.saveSettings();
-          }),
-      );
-
-    new Setting(containerEl)
-      .setName("Show past events")
-      .setDesc("Display expired one-time events in the list below")
-      .addToggle((toggle) =>
-        toggle
-          .setValue(this.plugin.settings.showPastEventsInSettings)
-          .onChange(async (value) => {
-            this.plugin.settings.showPastEventsInSettings = value;
-            void this.plugin.saveSettings().then(() => this.render());
-          }),
-      );
-
-    new Setting(containerEl)
-      .setName("Frontmatter language")
-      .setDesc("Language for the properties when creating a note from an event")
-      .addDropdown((dropdown) =>
-        dropdown
-          .addOption("en", "English (Title, Date, Context)")
-          .addOption("es", "Spanish (Título, Fecha, Contexto)")
-          .setValue(this.plugin.settings.frontmatterLanguage)
-          .onChange(async (value: string) => {
-            this.plugin.settings.frontmatterLanguage = value as "en" | "es";
-            await this.plugin.saveSettings();
-          }),
-      );
-
-    new Setting(containerEl)
-      .setName("Event notes folder")
-      .setDesc(
-        "Folder where event notes will be created. Leave empty for vault root.",
-      )
-      .addText((text) =>
-        text
-          .setPlaceholder("e.g. Calendar/Events")
-          .setValue(this.plugin.settings.eventNoteFolder)
-          .onChange(async (value) => {
-            this.plugin.settings.eventNoteFolder = value;
-            await this.plugin.saveSettings();
-          }),
-      );
+  async setControlValue(key: string, value: unknown): Promise<void> {
+    (this.plugin.settings as unknown as Record<string, unknown>)[key] = value;
+    // Route through saveSettings so the timeline, calendar decorations and
+    // pending indicators refresh exactly as they do from the rendered tab.
+    await this.plugin.saveSettings();
   }
 
   private renderExternalCalendars(containerEl: HTMLElement): void {
-    new Setting(containerEl).setName("External Calendars").setHeading();
+    new Setting(containerEl).setName("External calendars").setHeading();
 
     let name = "";
     let url = "";
@@ -139,7 +213,7 @@ export class EventSettingsTab extends PluginSettingTab {
               enabled: true,
               refreshIntervalMinutes,
             });
-            this.render();
+            this.update();
           }),
       );
 
@@ -148,7 +222,7 @@ export class EventSettingsTab extends PluginSettingTab {
       .setDesc("Fetch all enabled ICS subscriptions now")
       .addButton((button) =>
         button.setButtonText("Refresh now").onClick(() => {
-          void this.plugin.syncExternalCalendars().then(() => this.render());
+          void this.plugin.syncExternalCalendars().then(() => this.update());
         }),
       );
 
@@ -175,27 +249,27 @@ export class EventSettingsTab extends PluginSettingTab {
       .addToggle((toggle) =>
         toggle.setValue(source.enabled).onChange((value) => {
           this.plugin.updateExternalCalendarSource({ ...source, enabled: value });
-          this.render();
+          this.update();
         }),
       )
       .addButton((button) =>
         button.setButtonText("Refresh").onClick(() => {
-          void this.plugin.syncExternalCalendars([source.id]).then(() => this.render());
+          void this.plugin.syncExternalCalendars([source.id]).then(() => this.update());
         }),
       )
       .addButton((button) =>
         button
           .setButtonText("Remove")
-          .setWarning()
+          .setDestructive()
           .onClick(() => {
             this.plugin.deleteExternalCalendarSource(source.id);
-            this.render();
+            this.update();
           }),
       );
   }
 
   private renderDataManagement(containerEl: HTMLElement): void {
-    new Setting(containerEl).setName("Data Management").setHeading();
+    new Setting(containerEl).setName("Data management").setHeading();
 
     new Setting(containerEl)
       .setName("Export events")
@@ -220,7 +294,7 @@ export class EventSettingsTab extends PluginSettingTab {
           try {
             const count = this.plugin.importEventsFromJson(importText);
             new Notice(`Imported ${count} events.`);
-            this.render();
+            this.update();
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             new Notice(`Import failed: ${message}`);
@@ -240,7 +314,7 @@ export class EventSettingsTab extends PluginSettingTab {
       .setDesc("Add a new event to your calendar")
       .addButton((button) =>
         button
-          .setButtonText("+ Add Event")
+          .setButtonText("Add event")
           .setCta()
           .onClick(() => {
             new EventModal(this.app, (event) => {
@@ -249,7 +323,7 @@ export class EventSettingsTab extends PluginSettingTab {
                 id: event.id || generateId(),
                 updatedAt: new Date().toISOString(),
               });
-              void this.plugin.saveSettings().then(() => this.render());
+              void this.plugin.saveSettings().then(() => this.update());
             }).open();
           }),
       );
@@ -343,7 +417,7 @@ export class EventSettingsTab extends PluginSettingTab {
         this.app,
         (updatedEvent) => {
           this.plugin.updateEvent(updatedEvent);
-          this.render();
+          this.update();
         },
         event,
       ).open();
@@ -351,22 +425,22 @@ export class EventSettingsTab extends PluginSettingTab {
 
     this.addIconButton(actionsEl, "copy", "Duplicate event", () => {
       this.plugin.duplicateEvent(event);
-      this.render();
+      this.update();
     });
 
     this.addIconButton(actionsEl, "check", "Mark complete", () => {
       this.plugin.setEventStatus(event.id, "completed");
-      this.render();
+      this.update();
     });
 
     this.addIconButton(actionsEl, "archive", "Archive event", () => {
       this.plugin.setEventStatus(event.id, "archived");
-      this.render();
+      this.update();
     });
 
     this.addIconButton(actionsEl, "trash-2", "Delete event", () => {
       this.plugin.deleteEvent(event.id);
-      this.render();
+      this.update();
     }).addClass("memento-settings-btn-delete");
   }
 

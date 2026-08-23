@@ -7,6 +7,7 @@ export type EventStatus = "active" | "completed" | "archived";
 export type TimelineViewMode = "all" | "month";
 export type TimelineSourceFilter = "all" | "memento" | "external";
 export type TimelineDateRange = "upcoming" | "week" | "month" | "all";
+export type PendingCountWindow = "today" | "week" | "month" | "all";
 
 export interface MementoEvent {
   id: string;
@@ -78,6 +79,11 @@ export interface MementoSettings {
   showPastEventsInSettings: boolean;
   eventNoteFolder: string;
   frontmatterLanguage: "en" | "es";
+  openTimelineOnStartup: boolean;
+  showStatusBarCount: boolean;
+  showRibbonBadge: boolean;
+  pendingCountWindow: PendingCountWindow;
+  pendingIncludeOverdue: boolean;
 }
 
 export const DEFAULT_TIMELINE_FILTERS: TimelineFilters = {
@@ -99,6 +105,11 @@ export const DEFAULT_SETTINGS: MementoSettings = {
   showPastEventsInSettings: false,
   eventNoteFolder: "",
   frontmatterLanguage: "en",
+  openTimelineOnStartup: false,
+  showStatusBarCount: true,
+  showRibbonBadge: true,
+  pendingCountWindow: "today",
+  pendingIncludeOverdue: false,
 };
 
 export const VIEW_TYPE_TIMELINE = "memento-timeline";
@@ -226,6 +237,7 @@ export function getRecurrenceOccurrences(
   },
   startRange: string,
   endRange: string,
+  maxOccurrences = 1500,
 ): string[] {
   if (event.recurrence === "none") {
     if (event.date >= startRange && event.date <= endRange) {
@@ -234,77 +246,143 @@ export function getRecurrenceOccurrences(
     return [];
   }
 
-  const occurrences: string[] = [];
   const eventDate = new Date(event.date + "T00:00:00");
   const rangeStart = new Date(startRange + "T00:00:00");
   const rangeEnd = new Date(endRange + "T00:00:00");
+  if (
+    Number.isNaN(eventDate.getTime()) ||
+    Number.isNaN(rangeStart.getTime()) ||
+    Number.isNaN(rangeEnd.getTime())
+  ) {
+    return [];
+  }
+
   const recurrenceEnd = event.recurrenceEndDate
     ? new Date(event.recurrenceEndDate + "T00:00:00")
     : null;
   const interval = Math.max(1, event.recurrenceInterval || 1);
 
-  let current = new Date(eventDate);
-  let generatedCount = 0;
+  const occurrences: string[] = [];
+  let step = firstStepOnOrAfter(eventDate, event.recurrence, interval, rangeStart);
+  if (event.recurrenceCount && step >= event.recurrenceCount) return [];
 
-  while (current < rangeStart) {
-    generatedCount++;
-    if (event.recurrenceCount && generatedCount >= event.recurrenceCount) {
-      return [];
-    }
-    current = advanceDate(current, event.recurrence, eventDate, interval);
-  }
-
-  const maxIterations = 1500;
-  let iterations = 0;
-  while (current <= rangeEnd && iterations < maxIterations) {
+  const maxIterations = Math.max(1, maxOccurrences);
+  for (let i = 0; i < maxIterations; i++) {
+    if (event.recurrenceCount && step >= event.recurrenceCount) break;
+    const current = occurrenceAt(eventDate, event.recurrence, interval, step);
+    if (current > rangeEnd) break;
     if (recurrenceEnd && current > recurrenceEnd) break;
-    generatedCount++;
-    if (!event.recurrenceCount || generatedCount <= event.recurrenceCount) {
-      occurrences.push(dateToStr(current));
-    }
-    if (event.recurrenceCount && generatedCount >= event.recurrenceCount) break;
-    current = advanceDate(current, event.recurrence, eventDate, interval);
-    iterations++;
+    if (current >= rangeStart) occurrences.push(dateToStr(current));
+    step++;
   }
 
   return occurrences;
 }
 
-function advanceDate(
-  current: Date,
-  recurrence: RecurrenceType,
+function daysInMonth(year: number, monthIndex: number): number {
+  return new Date(year, monthIndex + 1, 0).getDate();
+}
+
+/**
+ * The nth occurrence of a recurring event, always derived from the original
+ * start date rather than from the previous occurrence.
+ *
+ * Stepping cumulatively let a monthly event starting on the 29th, 30th or 31st
+ * reach a fixed point — Feb 28 advances to Mar 28, fails the "same day of
+ * month" check and clamps straight back to Feb 28 — so the date stopped moving
+ * and the catch-up loop span forever. Deriving each occurrence from the
+ * original date keeps the sequence strictly increasing and gives the intended
+ * calendar semantics: Jan 31 -> Feb 28 -> Mar 31.
+ */
+function occurrenceAt(
   originalDate: Date,
+  recurrence: RecurrenceType,
   interval: number,
+  step: number,
 ): Date {
-  const next = new Date(current);
+  const next = new Date(originalDate);
   switch (recurrence) {
     case "daily":
-      next.setDate(next.getDate() + interval);
+      next.setDate(next.getDate() + interval * step);
       break;
     case "weekly":
-      next.setDate(next.getDate() + 7 * interval);
+      next.setDate(next.getDate() + 7 * interval * step);
       break;
     case "monthly": {
-      const origDay = originalDate.getDate();
-      next.setMonth(next.getMonth() + interval);
-      if (next.getDate() !== origDay) {
-        next.setDate(0);
-      }
+      const day = originalDate.getDate();
+      next.setDate(1);
+      next.setMonth(next.getMonth() + interval * step);
+      next.setDate(Math.min(day, daysInMonth(next.getFullYear(), next.getMonth())));
       break;
     }
     case "yearly": {
-      const origDay = originalDate.getDate();
-      next.setFullYear(next.getFullYear() + interval);
-      if (next.getDate() !== origDay) {
-        next.setDate(0);
-      }
+      const day = originalDate.getDate();
+      next.setDate(1);
+      next.setFullYear(next.getFullYear() + interval * step);
+      next.setDate(Math.min(day, daysInMonth(next.getFullYear(), next.getMonth())));
       break;
     }
     default:
-      next.setFullYear(next.getFullYear() + 100);
+      next.setFullYear(next.getFullYear() + 100 * step);
       break;
   }
   return next;
+}
+
+/**
+ * First step index whose occurrence lands on or after rangeStart, computed
+ * arithmetically. Walking there one occurrence at a time made an event dated
+ * far in the past cost hundreds of thousands of iterations on every timeline
+ * refresh, status bar update and calendar decoration pass.
+ */
+function firstStepOnOrAfter(
+  originalDate: Date,
+  recurrence: RecurrenceType,
+  interval: number,
+  rangeStart: Date,
+): number {
+  if (originalDate >= rangeStart) return 0;
+
+  const msPerDay = 24 * 60 * 60 * 1000;
+  const elapsedMs = rangeStart.getTime() - originalDate.getTime();
+  let estimate: number;
+
+  switch (recurrence) {
+    case "daily":
+      estimate = Math.floor(elapsedMs / msPerDay / interval);
+      break;
+    case "weekly":
+      estimate = Math.floor(elapsedMs / (msPerDay * 7) / interval);
+      break;
+    case "monthly": {
+      const months =
+        (rangeStart.getFullYear() - originalDate.getFullYear()) * 12 +
+        (rangeStart.getMonth() - originalDate.getMonth());
+      estimate = Math.floor(months / interval);
+      break;
+    }
+    case "yearly":
+      estimate = Math.floor(
+        (rangeStart.getFullYear() - originalDate.getFullYear()) / interval,
+      );
+      break;
+    default:
+      return 0;
+  }
+
+  // Start a little short of the estimate, then close the gap exactly: DST
+  // shifts and end-of-month clamping can move an occurrence by a day.
+  let step = Math.max(0, estimate - 2);
+  let guard = 0;
+  while (
+    occurrenceAt(originalDate, recurrence, interval, step) < rangeStart &&
+    guard < 400
+  ) {
+    step++;
+    guard++;
+  }
+
+  return step;
 }
 
 export function dateToStr(d: Date): string {
@@ -317,12 +395,15 @@ export function addDays(dateStr: string, days: number): string {
   return dateToStr(d);
 }
 
+/** Sentinel start date meaning "no lower bound" for the All date range. */
+export const ALL_DATES_START = "0000-01-01";
+
 export function getTimelineRange(
   viewMode: TimelineViewMode,
   filters: TimelineFilters = DEFAULT_TIMELINE_FILTERS,
 ): { startDate: string; endDate: string } {
   const today = getTodayStr();
-  const startDate = filters.dateRange === "all" ? "0000-01-01" : today;
+  const startDate = filters.dateRange === "all" ? ALL_DATES_START : today;
   let endDate: string;
 
   if (filters.dateRange === "week") {
@@ -343,6 +424,23 @@ export function getTimelineRange(
 /**
  * Get all timeline entries sorted by date and time.
  */
+/**
+ * Date spans tried, in order, before falling back to the filter's full range.
+ * A dense calendar is satisfied by the first window, so the timeline never pays
+ * to expand two years of daily recurrences just to show the next screenful.
+ */
+const TIMELINE_WINDOW_STEPS_DAYS = [30, 180, 730];
+
+/**
+ * Timeline entries sorted by date and time.
+ *
+ * `limit` bounds the work, not just the output: expanding every occurrence in
+ * range and slicing afterwards meant 500 daily events over "All upcoming" built
+ * 750,000 entries on every keystroke. Because each event's occurrences come out
+ * in ascending order, the globally earliest `limit` entries can never need more
+ * than `limit` occurrences from any single event — so both the per-event
+ * expansion and the search window can be capped without changing the result.
+ */
 export function getTimelineEntries(
   events: MementoEvent[],
   viewMode: TimelineViewMode,
@@ -350,15 +448,61 @@ export function getTimelineEntries(
   filters: TimelineFilters = DEFAULT_TIMELINE_FILTERS,
   externalSources: ExternalCalendarSource[] = [],
   hiddenExternalEventIds: string[] = [],
-): TimelineEntry[] {
+  limit = 0,
+): { entries: TimelineEntry[]; hasMore: boolean } {
   const { startDate, endDate } = getTimelineRange(viewMode, filters);
+  const collect = (rangeEnd: string) =>
+    collectTimelineEntries(
+      events,
+      externalEvents,
+      filters,
+      externalSources,
+      hiddenExternalEventIds,
+      startDate,
+      rangeEnd,
+      limit > 0 ? limit : 1500,
+    );
+
+  if (limit > 0 && startDate !== ALL_DATES_START) {
+    for (const days of TIMELINE_WINDOW_STEPS_DAYS) {
+      const windowEnd = addDays(startDate, days);
+      if (windowEnd >= endDate) break;
+      const windowed = collect(windowEnd);
+      if (windowed.length > limit) {
+        return { entries: windowed.slice(0, limit), hasMore: true };
+      }
+    }
+  }
+
+  const all = collect(endDate);
+  if (limit > 0 && all.length > limit) {
+    return { entries: all.slice(0, limit), hasMore: true };
+  }
+  return { entries: all, hasMore: false };
+}
+
+function collectTimelineEntries(
+  events: MementoEvent[],
+  externalEvents: ExternalCalendarEvent[],
+  filters: TimelineFilters,
+  externalSources: ExternalCalendarSource[],
+  hiddenExternalEventIds: string[],
+  startDate: string,
+  endDate: string,
+  perEventLimit: number,
+): TimelineEntry[] {
   const entries: TimelineEntry[] = [];
 
   for (const rawEvent of events) {
     const event = normalizeEvent(rawEvent);
     if (!shouldShowManualEvent(event, filters)) continue;
 
-    const occurrences = getRecurrenceOccurrences(event, startDate, endDate);
+    const occurrences = getRecurrenceOccurrences(
+      event,
+      startDate,
+      endDate,
+      perEventLimit,
+    );
     for (const date of occurrences) {
       entries.push({
         id: `${event.id}:${date}`,
@@ -383,7 +527,12 @@ export function getTimelineEntries(
     if (!shouldShowExternalEvent(event, filters)) continue;
 
     const source = externalSources.find((item) => item.id === event.sourceId);
-    const occurrences = getRecurrenceOccurrences(event, startDate, endDate);
+    const occurrences = getRecurrenceOccurrences(
+      event,
+      startDate,
+      endDate,
+      perEventLimit,
+    );
     for (const date of occurrences) {
       entries.push({
         id: `${event.id}:${date}`,
@@ -481,4 +630,152 @@ export function getEventDatesSet(
   }
 
   return dates;
+}
+
+function isDateString(value: unknown): boolean {
+  return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value);
+}
+
+/**
+ * Statuses the timeline hides by default. Mirrors shouldShowManualEvent so an
+ * unrecognised status behaves identically in the count and in the timeline.
+ */
+function isHiddenStatus(status: EventStatus | undefined): boolean {
+  return status === "completed" || status === "archived";
+}
+
+export interface PendingCountOptions {
+  events: MementoEvent[];
+  externalEvents?: ExternalCalendarEvent[];
+  externalSources?: ExternalCalendarSource[];
+  hiddenExternalEventIds?: string[];
+  countWindow: PendingCountWindow;
+  includeOverdue: boolean;
+  now?: Date;
+}
+
+/**
+ * End of the range a pending count looks at, as "YYYY-MM-DD".
+ */
+function getPendingRangeEnd(countWindow: PendingCountWindow, now: Date): string {
+  const todayStr = dateToStr(now);
+  switch (countWindow) {
+    case "today":
+      return todayStr;
+    case "week":
+      return addDays(todayStr, 7);
+    case "month":
+      return addDays(todayStr, 30);
+    default: {
+      const d = new Date(now);
+      d.setFullYear(d.getFullYear() + 2);
+      return dateToStr(d);
+    }
+  }
+}
+
+/**
+ * Entries counted as "pending" for the status bar / ribbon badge.
+ *
+ * Deliberately independent of the timeline's saved filters: a leftover search
+ * term or source filter must never change the number shown on the indicator.
+ * Completed and archived events are always excluded, as are hidden external
+ * events and events from disabled sources.
+ *
+ * Overdue only ever covers one-time Memento events plus occurrences earlier
+ * today whose time has passed. Recurring events always have a next occurrence,
+ * and external feeds carry their own history, so neither is treated as overdue.
+ */
+export function getPendingEntries({
+  events,
+  externalEvents = [],
+  externalSources = [],
+  hiddenExternalEventIds = [],
+  countWindow,
+  includeOverdue,
+  now = new Date(),
+}: PendingCountOptions): TimelineEntry[] {
+  const todayStr = dateToStr(now);
+  const nowTime = `${now.getHours().toString().padStart(2, "0")}:${now
+    .getMinutes()
+    .toString()
+    .padStart(2, "0")}`;
+  const endDate = getPendingRangeEnd(countWindow, now);
+  const entries: TimelineEntry[] = [];
+
+  const hasPassedToday = (date: string, time: string): boolean =>
+    date === todayStr && !!time && time < nowTime;
+
+  for (const rawEvent of events) {
+    const event = normalizeEvent(rawEvent);
+    if (isHiddenStatus(event.status)) continue;
+
+    for (const date of getRecurrenceOccurrences(event, todayStr, endDate)) {
+      if (!includeOverdue && hasPassedToday(date, event.time)) continue;
+      entries.push({
+        id: `${event.id}:${date}`,
+        sourceType: "memento",
+        sourceId: "memento",
+        sourceName: "Memento",
+        event,
+        occurrenceDate: date,
+        occurrenceTime: event.time,
+        editable: true,
+      });
+    }
+  }
+
+  const enabledSourceIds = new Set(
+    externalSources.filter((source) => source.enabled).map((source) => source.id),
+  );
+
+  for (const event of externalEvents) {
+    if (hiddenExternalEventIds.includes(event.id)) continue;
+    if (!enabledSourceIds.has(event.sourceId)) continue;
+
+    const source = externalSources.find((item) => item.id === event.sourceId);
+    for (const date of getRecurrenceOccurrences(event, todayStr, endDate)) {
+      if (!includeOverdue && hasPassedToday(date, event.time)) continue;
+      entries.push({
+        id: `${event.id}:${date}`,
+        sourceType: "external",
+        sourceId: event.sourceId,
+        sourceName: source?.name || "External calendar",
+        event,
+        occurrenceDate: date,
+        occurrenceTime: event.time,
+        editable: false,
+      });
+    }
+  }
+
+  if (includeOverdue) {
+    for (const rawEvent of events) {
+      const event = normalizeEvent(rawEvent);
+      if (isHiddenStatus(event.status)) continue;
+      if (event.recurrence !== "none") continue;
+      // A malformed date must not read as "long overdue": "" and undefined
+      // both compare below today, which would pin a broken event to the badge.
+      if (!isDateString(event.date)) continue;
+      if (event.date >= todayStr) continue;
+      entries.push({
+        id: `${event.id}:${event.date}`,
+        sourceType: "memento",
+        sourceId: "memento",
+        sourceName: "Memento",
+        event,
+        occurrenceDate: event.date,
+        occurrenceTime: event.time,
+        editable: true,
+      });
+    }
+  }
+
+  entries.sort((a, b) => {
+    const dateCmp = a.occurrenceDate.localeCompare(b.occurrenceDate);
+    if (dateCmp !== 0) return dateCmp;
+    return a.occurrenceTime.localeCompare(b.occurrenceTime);
+  });
+
+  return entries;
 }

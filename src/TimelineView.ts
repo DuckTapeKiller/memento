@@ -17,8 +17,14 @@ import {
   formatTimeDisplay,
   getRecurrenceLabel,
   getTimelineEntries,
+  getTodayStr,
 } from "./types";
 import { EventModal } from "./EventModal";
+
+/** How many event cards to build at once. The timeline expands recurring
+ * events per occurrence, so an unbounded list can reach hundreds of thousands
+ * of cards and lock up the renderer. */
+const TIMELINE_RENDER_LIMIT = 200;
 
 class ConfirmModal extends Modal {
   constructor(
@@ -118,7 +124,7 @@ class EventActionModal extends Modal {
     if (this.entry.editable) {
       setting
         .addButton((btn) =>
-          btn.setButtonText("Edit Event").onClick(() => {
+          btn.setButtonText("Edit event").onClick(() => {
             this.close();
             this.actions.edit();
           }),
@@ -208,6 +214,8 @@ export class TimelineView extends ItemView {
   private shouldRestoreSearchFocus = false;
   private searchCursorPosition: number | null = null;
   private filtersExpanded = false;
+  private lastRenderSignature: string | null = null;
+  private renderLimit = TIMELINE_RENDER_LIMIT;
 
   constructor(leaf: WorkspaceLeaf, plugin: MementoPlugin) {
     super(leaf);
@@ -219,7 +227,7 @@ export class TimelineView extends ItemView {
   }
 
   getDisplayText(): string {
-    return "Event Timeline";
+    return "Event timeline";
   }
 
   getIcon(): string {
@@ -231,24 +239,40 @@ export class TimelineView extends ItemView {
   }
 
   async onClose(): Promise<void> {
+    this.lastRenderSignature = null;
     this.contentEl.empty();
   }
 
-  render(): void {
+  render(force = false): void {
     const { contentEl } = this;
-    contentEl.empty();
-    contentEl.addClass("memento-timeline-container");
 
-    this.renderFilters(contentEl);
-
-    const entries = getTimelineEntries(
+    const { entries, hasMore } = getTimelineEntries(
       this.plugin.settings.events,
       this.plugin.settings.timelineViewMode,
       this.plugin.settings.externalEventsCache,
       this.plugin.settings.timelineFilters,
       this.plugin.settings.externalCalendarSources,
       this.plugin.settings.hiddenExternalEventIds,
+      this.renderLimit,
     );
+
+    // The plugin re-renders every 60s to keep the "days remaining" counters
+    // fresh. Rebuilding identical DOM resets the scroll position and collapses
+    // the filter panel mid-use, so skip the work when nothing has changed.
+    const signature = this.buildRenderSignature(entries, hasMore);
+    if (
+      !force &&
+      signature === this.lastRenderSignature &&
+      contentEl.childElementCount > 0
+    ) {
+      return;
+    }
+    this.lastRenderSignature = signature;
+
+    contentEl.empty();
+    contentEl.addClass("memento-timeline-container");
+
+    this.renderFilters(contentEl);
 
     if (entries.length === 0) {
       this.renderEmptyState(contentEl);
@@ -263,6 +287,48 @@ export class TimelineView extends ItemView {
     for (const entry of entries) {
       this.renderEntry(ul, entry);
     }
+
+    if (hasMore) {
+      const more = timelineWrapper.createDiv({ cls: "memento-timeline-more" });
+      more.createEl("p", {
+        text: `Showing the first ${entries.length} events.`,
+        cls: "memento-timeline-more-count",
+      });
+      const button = more.createEl("button", {
+        text: `Show ${TIMELINE_RENDER_LIMIT} more`,
+        cls: "memento-timeline-more-btn",
+        attr: { type: "button" },
+      });
+      button.addEventListener("click", () => {
+        this.renderLimit += TIMELINE_RENDER_LIMIT;
+        this.render(true);
+      });
+    }
+  }
+
+  /** Filter changes make the old "show more" depth meaningless. */
+  private resetRenderLimit(): void {
+    this.renderLimit = TIMELINE_RENDER_LIMIT;
+  }
+
+  private buildRenderSignature(
+    entries: TimelineEntry[],
+    hasMore: boolean,
+  ): string {
+    return JSON.stringify({
+      today: getTodayStr(),
+      viewMode: this.plugin.settings.timelineViewMode,
+      filters: this.plugin.settings.timelineFilters,
+      hasMore,
+      limit: this.renderLimit,
+      sources: this.plugin.settings.externalCalendarSources.map(
+        (source) => `${source.id}|${source.name}|${source.enabled}`,
+      ),
+      entries: entries.map(
+        (entry) =>
+          `${entry.id}|${entry.occurrenceTime}|${entry.sourceName}|${entry.event.title}|${entry.event.context}`,
+      ),
+    });
   }
 
   private renderFilters(container: HTMLElement): void {
@@ -282,7 +348,7 @@ export class TimelineView extends ItemView {
       type: "search",
       placeholder: "Search events",
       cls: "memento-search-input",
-    }) as HTMLInputElement;
+    });
     searchInput.value = filters.search;
 
     const clearButton = searchArea.createEl("button", {
@@ -337,7 +403,10 @@ export class TimelineView extends ItemView {
       filters.search = target.value;
       this.shouldRestoreSearchFocus = true;
       this.searchCursorPosition = target.selectionStart ?? target.value.length;
-      void this.plugin.saveSettings();
+      this.resetRenderLimit();
+      // Redraw now for responsiveness, but let the disk write coalesce.
+      this.render();
+      this.plugin.saveSettingsDebounced();
     });
 
     clearButton.addEventListener("click", () => {
@@ -346,6 +415,7 @@ export class TimelineView extends ItemView {
         filters.search = "";
         this.shouldRestoreSearchFocus = true;
         this.searchCursorPosition = 0;
+        this.resetRenderLimit();
         void this.plugin.saveSettings();
       } else {
         applyVisibility(false);
@@ -365,6 +435,7 @@ export class TimelineView extends ItemView {
         filters.sourceId = "";
         this.shouldRestoreSearchFocus = true;
         this.searchCursorPosition = null;
+        this.resetRenderLimit();
         void this.plugin.saveSettings();
       },
     );
@@ -384,6 +455,7 @@ export class TimelineView extends ItemView {
         filters.sourceId = value;
         this.shouldRestoreSearchFocus = true;
         this.searchCursorPosition = null;
+        this.resetRenderLimit();
         void this.plugin.saveSettings();
       },
     );
@@ -401,6 +473,7 @@ export class TimelineView extends ItemView {
         filters.dateRange = value as typeof filters.dateRange;
         this.shouldRestoreSearchFocus = true;
         this.searchCursorPosition = null;
+        this.resetRenderLimit();
         void this.plugin.saveSettings();
       },
     );
@@ -410,6 +483,7 @@ export class TimelineView extends ItemView {
         filters.includeCompleted = value;
         this.shouldRestoreSearchFocus = true;
         this.searchCursorPosition = null;
+        this.resetRenderLimit();
         void this.plugin.saveSettings();
       }),
     );
@@ -419,6 +493,7 @@ export class TimelineView extends ItemView {
         filters.includeArchived = value;
         this.shouldRestoreSearchFocus = true;
         this.searchCursorPosition = null;
+        this.resetRenderLimit();
         void this.plugin.saveSettings();
       }),
     );

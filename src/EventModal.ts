@@ -50,7 +50,8 @@ export class EventModal extends Modal {
 
     // Scroll focused inputs to top middle section on mobile
     contentEl.addEventListener("focusin", (e: FocusEvent) => {
-      if (!activeDocument.body.classList.contains("is-mobile")) return;
+      // The modal's own document, not the last-focused window's.
+      if (!contentEl.ownerDocument.body.classList.contains("is-mobile")) return;
       const target = e.target as HTMLElement;
       if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA")) {
         const scrollTarget = target.closest(".setting-item") as HTMLElement || target;
@@ -125,7 +126,7 @@ export class EventModal extends Modal {
 
     const timeSetting = new Setting(form)
       .setName("Time")
-      .setDesc("What time? (optional)");
+      .setDesc("What time? (Optional)");
 
     // Hour Input
     timeSetting.addText((text) => {
@@ -265,7 +266,7 @@ export class EventModal extends Modal {
       .setName("Title")
       .setDesc("Give your event a name")
       .addText((text) => {
-        text.setPlaceholder("e.g. Team standup, Dentist appointment...");
+        text.setPlaceholder("E.g. Team standup, dentist appointment...");
         text.setValue(this.event.title || "");
         text.onChange((value) => {
           this.event.title = value;
@@ -378,7 +379,7 @@ export class EventModal extends Modal {
     // Enter key to submit
     this.scope.register([], "Enter", (e) => {
       // Only submit if not in textarea
-      if (activeDocument.activeElement?.tagName !== "TEXTAREA") {
+      if (this.containerEl.ownerDocument.activeElement?.tagName !== "TEXTAREA") {
         e.preventDefault();
         this.handleSubmit();
       }

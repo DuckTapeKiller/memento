@@ -48,7 +48,12 @@ var DEFAULT_SETTINGS = {
   timelineViewMode: "all",
   showPastEventsInSettings: false,
   eventNoteFolder: "",
-  frontmatterLanguage: "en"
+  frontmatterLanguage: "en",
+  openTimelineOnStartup: false,
+  showStatusBarCount: true,
+  showRibbonBadge: true,
+  pendingCountWindow: "today",
+  pendingIncludeOverdue: false
 };
 var VIEW_TYPE_TIMELINE = "memento-timeline";
 var RECURRENCE_LABELS = {
@@ -113,72 +118,99 @@ function getRecurrenceLabel(event) {
   if (event.recurrenceCount) return `${base} (${event.recurrenceCount} times)`;
   return base;
 }
-function getRecurrenceOccurrences(event, startRange, endRange) {
+function getRecurrenceOccurrences(event, startRange, endRange, maxOccurrences = 1500) {
   if (event.recurrence === "none") {
     if (event.date >= startRange && event.date <= endRange) {
       return [event.date];
     }
     return [];
   }
-  const occurrences = [];
   const eventDate = /* @__PURE__ */ new Date(event.date + "T00:00:00");
   const rangeStart = /* @__PURE__ */ new Date(startRange + "T00:00:00");
   const rangeEnd = /* @__PURE__ */ new Date(endRange + "T00:00:00");
+  if (Number.isNaN(eventDate.getTime()) || Number.isNaN(rangeStart.getTime()) || Number.isNaN(rangeEnd.getTime())) {
+    return [];
+  }
   const recurrenceEnd = event.recurrenceEndDate ? /* @__PURE__ */ new Date(event.recurrenceEndDate + "T00:00:00") : null;
   const interval = Math.max(1, event.recurrenceInterval || 1);
-  let current = new Date(eventDate);
-  let generatedCount = 0;
-  while (current < rangeStart) {
-    generatedCount++;
-    if (event.recurrenceCount && generatedCount >= event.recurrenceCount) {
-      return [];
-    }
-    current = advanceDate(current, event.recurrence, eventDate, interval);
-  }
-  const maxIterations = 1500;
-  let iterations = 0;
-  while (current <= rangeEnd && iterations < maxIterations) {
+  const occurrences = [];
+  let step = firstStepOnOrAfter(eventDate, event.recurrence, interval, rangeStart);
+  if (event.recurrenceCount && step >= event.recurrenceCount) return [];
+  const maxIterations = Math.max(1, maxOccurrences);
+  for (let i = 0; i < maxIterations; i++) {
+    if (event.recurrenceCount && step >= event.recurrenceCount) break;
+    const current = occurrenceAt(eventDate, event.recurrence, interval, step);
+    if (current > rangeEnd) break;
     if (recurrenceEnd && current > recurrenceEnd) break;
-    generatedCount++;
-    if (!event.recurrenceCount || generatedCount <= event.recurrenceCount) {
-      occurrences.push(dateToStr(current));
-    }
-    if (event.recurrenceCount && generatedCount >= event.recurrenceCount) break;
-    current = advanceDate(current, event.recurrence, eventDate, interval);
-    iterations++;
+    if (current >= rangeStart) occurrences.push(dateToStr(current));
+    step++;
   }
   return occurrences;
 }
-function advanceDate(current, recurrence, originalDate, interval) {
-  const next = new Date(current);
+function daysInMonth(year, monthIndex) {
+  return new Date(year, monthIndex + 1, 0).getDate();
+}
+function occurrenceAt(originalDate, recurrence, interval, step) {
+  const next = new Date(originalDate);
   switch (recurrence) {
     case "daily":
-      next.setDate(next.getDate() + interval);
+      next.setDate(next.getDate() + interval * step);
       break;
     case "weekly":
-      next.setDate(next.getDate() + 7 * interval);
+      next.setDate(next.getDate() + 7 * interval * step);
       break;
     case "monthly": {
-      const origDay = originalDate.getDate();
-      next.setMonth(next.getMonth() + interval);
-      if (next.getDate() !== origDay) {
-        next.setDate(0);
-      }
+      const day = originalDate.getDate();
+      next.setDate(1);
+      next.setMonth(next.getMonth() + interval * step);
+      next.setDate(Math.min(day, daysInMonth(next.getFullYear(), next.getMonth())));
       break;
     }
     case "yearly": {
-      const origDay = originalDate.getDate();
-      next.setFullYear(next.getFullYear() + interval);
-      if (next.getDate() !== origDay) {
-        next.setDate(0);
-      }
+      const day = originalDate.getDate();
+      next.setDate(1);
+      next.setFullYear(next.getFullYear() + interval * step);
+      next.setDate(Math.min(day, daysInMonth(next.getFullYear(), next.getMonth())));
       break;
     }
     default:
-      next.setFullYear(next.getFullYear() + 100);
+      next.setFullYear(next.getFullYear() + 100 * step);
       break;
   }
   return next;
+}
+function firstStepOnOrAfter(originalDate, recurrence, interval, rangeStart) {
+  if (originalDate >= rangeStart) return 0;
+  const msPerDay = 24 * 60 * 60 * 1e3;
+  const elapsedMs = rangeStart.getTime() - originalDate.getTime();
+  let estimate;
+  switch (recurrence) {
+    case "daily":
+      estimate = Math.floor(elapsedMs / msPerDay / interval);
+      break;
+    case "weekly":
+      estimate = Math.floor(elapsedMs / (msPerDay * 7) / interval);
+      break;
+    case "monthly": {
+      const months = (rangeStart.getFullYear() - originalDate.getFullYear()) * 12 + (rangeStart.getMonth() - originalDate.getMonth());
+      estimate = Math.floor(months / interval);
+      break;
+    }
+    case "yearly":
+      estimate = Math.floor(
+        (rangeStart.getFullYear() - originalDate.getFullYear()) / interval
+      );
+      break;
+    default:
+      return 0;
+  }
+  let step = Math.max(0, estimate - 2);
+  let guard = 0;
+  while (occurrenceAt(originalDate, recurrence, interval, step) < rangeStart && guard < 400) {
+    step++;
+    guard++;
+  }
+  return step;
 }
 function dateToStr(d) {
   return `${d.getFullYear()}-${(d.getMonth() + 1).toString().padStart(2, "0")}-${d.getDate().toString().padStart(2, "0")}`;
@@ -188,9 +220,10 @@ function addDays(dateStr, days) {
   d.setDate(d.getDate() + days);
   return dateToStr(d);
 }
+var ALL_DATES_START = "0000-01-01";
 function getTimelineRange(viewMode, filters = DEFAULT_TIMELINE_FILTERS) {
   const today = getTodayStr();
-  const startDate = filters.dateRange === "all" ? "0000-01-01" : today;
+  const startDate = filters.dateRange === "all" ? ALL_DATES_START : today;
   let endDate;
   if (filters.dateRange === "week") {
     endDate = addDays(today, 7);
@@ -205,13 +238,46 @@ function getTimelineRange(viewMode, filters = DEFAULT_TIMELINE_FILTERS) {
   }
   return { startDate, endDate };
 }
-function getTimelineEntries(events, viewMode, externalEvents = [], filters = DEFAULT_TIMELINE_FILTERS, externalSources = [], hiddenExternalEventIds = []) {
+var TIMELINE_WINDOW_STEPS_DAYS = [30, 180, 730];
+function getTimelineEntries(events, viewMode, externalEvents = [], filters = DEFAULT_TIMELINE_FILTERS, externalSources = [], hiddenExternalEventIds = [], limit = 0) {
   const { startDate, endDate } = getTimelineRange(viewMode, filters);
+  const collect = (rangeEnd) => collectTimelineEntries(
+    events,
+    externalEvents,
+    filters,
+    externalSources,
+    hiddenExternalEventIds,
+    startDate,
+    rangeEnd,
+    limit > 0 ? limit : 1500
+  );
+  if (limit > 0 && startDate !== ALL_DATES_START) {
+    for (const days of TIMELINE_WINDOW_STEPS_DAYS) {
+      const windowEnd = addDays(startDate, days);
+      if (windowEnd >= endDate) break;
+      const windowed = collect(windowEnd);
+      if (windowed.length > limit) {
+        return { entries: windowed.slice(0, limit), hasMore: true };
+      }
+    }
+  }
+  const all = collect(endDate);
+  if (limit > 0 && all.length > limit) {
+    return { entries: all.slice(0, limit), hasMore: true };
+  }
+  return { entries: all, hasMore: false };
+}
+function collectTimelineEntries(events, externalEvents, filters, externalSources, hiddenExternalEventIds, startDate, endDate, perEventLimit) {
   const entries = [];
   for (const rawEvent of events) {
     const event = normalizeEvent(rawEvent);
     if (!shouldShowManualEvent(event, filters)) continue;
-    const occurrences = getRecurrenceOccurrences(event, startDate, endDate);
+    const occurrences = getRecurrenceOccurrences(
+      event,
+      startDate,
+      endDate,
+      perEventLimit
+    );
     for (const date of occurrences) {
       entries.push({
         id: `${event.id}:${date}`,
@@ -233,7 +299,12 @@ function getTimelineEntries(events, viewMode, externalEvents = [], filters = DEF
     if (!enabledSourceIds.has(event.sourceId)) continue;
     if (!shouldShowExternalEvent(event, filters)) continue;
     const source = externalSources.find((item) => item.id === event.sourceId);
-    const occurrences = getRecurrenceOccurrences(event, startDate, endDate);
+    const occurrences = getRecurrenceOccurrences(
+      event,
+      startDate,
+      endDate,
+      perEventLimit
+    );
     for (const date of occurrences) {
       entries.push({
         id: `${event.id}:${date}`,
@@ -302,6 +373,106 @@ function getEventDatesSet(events, lookaheadDays, externalEvents = [], externalSo
   }
   return dates;
 }
+function isDateString(value) {
+  return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value);
+}
+function isHiddenStatus(status) {
+  return status === "completed" || status === "archived";
+}
+function getPendingRangeEnd(countWindow, now) {
+  const todayStr = dateToStr(now);
+  switch (countWindow) {
+    case "today":
+      return todayStr;
+    case "week":
+      return addDays(todayStr, 7);
+    case "month":
+      return addDays(todayStr, 30);
+    default: {
+      const d = new Date(now);
+      d.setFullYear(d.getFullYear() + 2);
+      return dateToStr(d);
+    }
+  }
+}
+function getPendingEntries({
+  events,
+  externalEvents = [],
+  externalSources = [],
+  hiddenExternalEventIds = [],
+  countWindow,
+  includeOverdue,
+  now = /* @__PURE__ */ new Date()
+}) {
+  const todayStr = dateToStr(now);
+  const nowTime = `${now.getHours().toString().padStart(2, "0")}:${now.getMinutes().toString().padStart(2, "0")}`;
+  const endDate = getPendingRangeEnd(countWindow, now);
+  const entries = [];
+  const hasPassedToday = (date, time) => date === todayStr && !!time && time < nowTime;
+  for (const rawEvent of events) {
+    const event = normalizeEvent(rawEvent);
+    if (isHiddenStatus(event.status)) continue;
+    for (const date of getRecurrenceOccurrences(event, todayStr, endDate)) {
+      if (!includeOverdue && hasPassedToday(date, event.time)) continue;
+      entries.push({
+        id: `${event.id}:${date}`,
+        sourceType: "memento",
+        sourceId: "memento",
+        sourceName: "Memento",
+        event,
+        occurrenceDate: date,
+        occurrenceTime: event.time,
+        editable: true
+      });
+    }
+  }
+  const enabledSourceIds = new Set(
+    externalSources.filter((source) => source.enabled).map((source) => source.id)
+  );
+  for (const event of externalEvents) {
+    if (hiddenExternalEventIds.includes(event.id)) continue;
+    if (!enabledSourceIds.has(event.sourceId)) continue;
+    const source = externalSources.find((item) => item.id === event.sourceId);
+    for (const date of getRecurrenceOccurrences(event, todayStr, endDate)) {
+      if (!includeOverdue && hasPassedToday(date, event.time)) continue;
+      entries.push({
+        id: `${event.id}:${date}`,
+        sourceType: "external",
+        sourceId: event.sourceId,
+        sourceName: source?.name || "External calendar",
+        event,
+        occurrenceDate: date,
+        occurrenceTime: event.time,
+        editable: false
+      });
+    }
+  }
+  if (includeOverdue) {
+    for (const rawEvent of events) {
+      const event = normalizeEvent(rawEvent);
+      if (isHiddenStatus(event.status)) continue;
+      if (event.recurrence !== "none") continue;
+      if (!isDateString(event.date)) continue;
+      if (event.date >= todayStr) continue;
+      entries.push({
+        id: `${event.id}:${event.date}`,
+        sourceType: "memento",
+        sourceId: "memento",
+        sourceName: "Memento",
+        event,
+        occurrenceDate: event.date,
+        occurrenceTime: event.time,
+        editable: true
+      });
+    }
+  }
+  entries.sort((a, b) => {
+    const dateCmp = a.occurrenceDate.localeCompare(b.occurrenceDate);
+    if (dateCmp !== 0) return dateCmp;
+    return a.occurrenceTime.localeCompare(b.occurrenceTime);
+  });
+  return entries;
+}
 
 // src/EventModal.ts
 var import_obsidian = require("obsidian");
@@ -333,7 +504,7 @@ var EventModal = class extends import_obsidian.Modal {
     contentEl.addClass("memento-modal");
     modalEl.addClass("memento-modal-container");
     contentEl.addEventListener("focusin", (e) => {
-      if (!activeDocument.body.classList.contains("is-mobile")) return;
+      if (!contentEl.ownerDocument.body.classList.contains("is-mobile")) return;
       const target = e.target;
       if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA")) {
         const scrollTarget = target.closest(".setting-item") || target;
@@ -387,7 +558,7 @@ var EventModal = class extends import_obsidian.Modal {
       currentHour = h;
       currentMin = m;
     }
-    const timeSetting = new import_obsidian.Setting(form).setName("Time").setDesc("What time? (optional)");
+    const timeSetting = new import_obsidian.Setting(form).setName("Time").setDesc("What time? (Optional)");
     timeSetting.addText((text) => {
       text.inputEl.type = "number";
       text.inputEl.min = "0";
@@ -505,7 +676,7 @@ var EventModal = class extends import_obsidian.Modal {
     };
     let titleInput;
     new import_obsidian.Setting(form).setName("Title").setDesc("Give your event a name").addText((text) => {
-      text.setPlaceholder("e.g. Team standup, Dentist appointment...");
+      text.setPlaceholder("E.g. Team standup, dentist appointment...");
       text.setValue(this.event.title || "");
       text.onChange((value) => {
         this.event.title = value;
@@ -576,7 +747,7 @@ var EventModal = class extends import_obsidian.Modal {
       if (titleInput) titleInput.focus();
     }, 50);
     this.scope.register([], "Enter", (e) => {
-      if (activeDocument.activeElement?.tagName !== "TEXTAREA") {
+      if (this.containerEl.ownerDocument.activeElement?.tagName !== "TEXTAREA") {
         e.preventDefault();
         this.handleSubmit();
       }
@@ -616,6 +787,7 @@ var EventModal = class extends import_obsidian.Modal {
 
 // src/TimelineView.ts
 var import_obsidian2 = require("obsidian");
+var TIMELINE_RENDER_LIMIT = 200;
 var ConfirmModal = class extends import_obsidian2.Modal {
   constructor(app, title, message, onConfirm, confirmText = "Confirm", isWarning = false) {
     super(app);
@@ -685,7 +857,7 @@ var EventActionModal = class extends import_obsidian2.Modal {
     );
     if (this.entry.editable) {
       setting.addButton(
-        (btn) => btn.setButtonText("Edit Event").onClick(() => {
+        (btn) => btn.setButtonText("Edit event").onClick(() => {
           this.close();
           this.actions.edit();
         })
@@ -762,13 +934,15 @@ var TimelineView = class extends import_obsidian2.ItemView {
     this.shouldRestoreSearchFocus = false;
     this.searchCursorPosition = null;
     this.filtersExpanded = false;
+    this.lastRenderSignature = null;
+    this.renderLimit = TIMELINE_RENDER_LIMIT;
     this.plugin = plugin;
   }
   getViewType() {
     return VIEW_TYPE_TIMELINE;
   }
   getDisplayText() {
-    return "Event Timeline";
+    return "Event timeline";
   }
   getIcon() {
     return "calendar-clock";
@@ -777,21 +951,28 @@ var TimelineView = class extends import_obsidian2.ItemView {
     this.render();
   }
   async onClose() {
+    this.lastRenderSignature = null;
     this.contentEl.empty();
   }
-  render() {
+  render(force = false) {
     const { contentEl } = this;
-    contentEl.empty();
-    contentEl.addClass("memento-timeline-container");
-    this.renderFilters(contentEl);
-    const entries = getTimelineEntries(
+    const { entries, hasMore } = getTimelineEntries(
       this.plugin.settings.events,
       this.plugin.settings.timelineViewMode,
       this.plugin.settings.externalEventsCache,
       this.plugin.settings.timelineFilters,
       this.plugin.settings.externalCalendarSources,
-      this.plugin.settings.hiddenExternalEventIds
+      this.plugin.settings.hiddenExternalEventIds,
+      this.renderLimit
     );
+    const signature = this.buildRenderSignature(entries, hasMore);
+    if (!force && signature === this.lastRenderSignature && contentEl.childElementCount > 0) {
+      return;
+    }
+    this.lastRenderSignature = signature;
+    contentEl.empty();
+    contentEl.addClass("memento-timeline-container");
+    this.renderFilters(contentEl);
     if (entries.length === 0) {
       this.renderEmptyState(contentEl);
       return;
@@ -803,6 +984,41 @@ var TimelineView = class extends import_obsidian2.ItemView {
     for (const entry of entries) {
       this.renderEntry(ul, entry);
     }
+    if (hasMore) {
+      const more = timelineWrapper.createDiv({ cls: "memento-timeline-more" });
+      more.createEl("p", {
+        text: `Showing the first ${entries.length} events.`,
+        cls: "memento-timeline-more-count"
+      });
+      const button = more.createEl("button", {
+        text: `Show ${TIMELINE_RENDER_LIMIT} more`,
+        cls: "memento-timeline-more-btn",
+        attr: { type: "button" }
+      });
+      button.addEventListener("click", () => {
+        this.renderLimit += TIMELINE_RENDER_LIMIT;
+        this.render(true);
+      });
+    }
+  }
+  /** Filter changes make the old "show more" depth meaningless. */
+  resetRenderLimit() {
+    this.renderLimit = TIMELINE_RENDER_LIMIT;
+  }
+  buildRenderSignature(entries, hasMore) {
+    return JSON.stringify({
+      today: getTodayStr(),
+      viewMode: this.plugin.settings.timelineViewMode,
+      filters: this.plugin.settings.timelineFilters,
+      hasMore,
+      limit: this.renderLimit,
+      sources: this.plugin.settings.externalCalendarSources.map(
+        (source) => `${source.id}|${source.name}|${source.enabled}`
+      ),
+      entries: entries.map(
+        (entry) => `${entry.id}|${entry.occurrenceTime}|${entry.sourceName}|${entry.event.title}|${entry.event.context}`
+      )
+    });
   }
   renderFilters(container) {
     const filters = this.plugin.settings.timelineFilters;
@@ -861,7 +1077,9 @@ var TimelineView = class extends import_obsidian2.ItemView {
       filters.search = target.value;
       this.shouldRestoreSearchFocus = true;
       this.searchCursorPosition = target.selectionStart ?? target.value.length;
-      void this.plugin.saveSettings();
+      this.resetRenderLimit();
+      this.render();
+      this.plugin.saveSettingsDebounced();
     });
     clearButton.addEventListener("click", () => {
       if (searchInput.value.length > 0) {
@@ -869,6 +1087,7 @@ var TimelineView = class extends import_obsidian2.ItemView {
         filters.search = "";
         this.shouldRestoreSearchFocus = true;
         this.searchCursorPosition = 0;
+        this.resetRenderLimit();
         void this.plugin.saveSettings();
       } else {
         applyVisibility(false);
@@ -887,6 +1106,7 @@ var TimelineView = class extends import_obsidian2.ItemView {
         filters.sourceId = "";
         this.shouldRestoreSearchFocus = true;
         this.searchCursorPosition = null;
+        this.resetRenderLimit();
         void this.plugin.saveSettings();
       }
     );
@@ -905,6 +1125,7 @@ var TimelineView = class extends import_obsidian2.ItemView {
         filters.sourceId = value;
         this.shouldRestoreSearchFocus = true;
         this.searchCursorPosition = null;
+        this.resetRenderLimit();
         void this.plugin.saveSettings();
       }
     );
@@ -921,6 +1142,7 @@ var TimelineView = class extends import_obsidian2.ItemView {
         filters.dateRange = value;
         this.shouldRestoreSearchFocus = true;
         this.searchCursorPosition = null;
+        this.resetRenderLimit();
         void this.plugin.saveSettings();
       }
     );
@@ -929,6 +1151,7 @@ var TimelineView = class extends import_obsidian2.ItemView {
         filters.includeCompleted = value;
         this.shouldRestoreSearchFocus = true;
         this.searchCursorPosition = null;
+        this.resetRenderLimit();
         void this.plugin.saveSettings();
       })
     );
@@ -937,6 +1160,7 @@ var TimelineView = class extends import_obsidian2.ItemView {
         filters.includeArchived = value;
         this.shouldRestoreSearchFocus = true;
         this.searchCursorPosition = null;
+        this.resetRenderLimit();
         void this.plugin.saveSettings();
       })
     );
@@ -1144,6 +1368,17 @@ var CalendarDecorator = class {
     this.plugin = plugin;
   }
   /**
+   * The document the workspace actually lives in.
+   *
+   * This used to read the global `activeDocument`, which points at whichever
+   * window was last focused — if that was not the main window (or was still
+   * an about:blank shell at load time), the floating add button was appended
+   * to a document the user never sees.
+   */
+  get doc() {
+    return this.plugin.app.workspace.containerEl.ownerDocument;
+  }
+  /**
    * Start observing the workspace for Calendar plugin views
    */
   start() {
@@ -1154,13 +1389,13 @@ var CalendarDecorator = class {
       })
     );
     this.setupDomObserver();
-    window.addEventListener("mousemove", this.mouseMoveHandler, {
-      passive: true
-    });
-    window.addEventListener("contextmenu", this.contextMenuHandler, true);
+    this.listenTo(this.doc.defaultView ?? window);
+    this.plugin.registerEvent(
+      this.plugin.app.workspace.on("window-open", (_leaf, win) => {
+        this.listenTo(win);
+      })
+    );
     this.plugin.register(() => {
-      window.removeEventListener("mousemove", this.mouseMoveHandler);
-      window.removeEventListener("contextmenu", this.contextMenuHandler, true);
       if (this.addBtnOverlay) {
         this.addBtnOverlay.remove();
         this.addBtnOverlay = null;
@@ -1169,16 +1404,26 @@ var CalendarDecorator = class {
     this.scheduleDecoration();
   }
   /**
+   * Registers the mouse handlers on a window. Called for the main window and
+   * for any pop-out the user opens.
+   */
+  listenTo(win) {
+    this.plugin.registerDomEvent(win, "mousemove", this.mouseMoveHandler, {
+      passive: true
+    });
+    this.plugin.registerDomEvent(win, "contextmenu", this.contextMenuHandler, true);
+  }
+  /**
    * Creates a single floating add button in the document body.
    */
   createAddButtonOverlay() {
     if (this.addBtnOverlay) return;
-    this.addBtnOverlay = activeDocument.createElement("div");
-    this.addBtnOverlay.className = "memento-add-btn memento-floating-btn";
-    this.addBtnOverlay.setText("+");
-    this.addBtnOverlay.setAttribute("aria-label", "Create Event");
+    this.addBtnOverlay = this.doc.body.createDiv({
+      cls: "memento-add-btn memento-floating-btn",
+      text: "+",
+      attr: { "aria-label": "Create event" }
+    });
     this.addBtnOverlay.setCssStyles({ display: "none" });
-    activeDocument.body.appendChild(this.addBtnOverlay);
     this.addBtnOverlay.addEventListener("click", (e) => {
       e.stopPropagation();
       e.preventDefault();
@@ -1206,7 +1451,7 @@ var CalendarDecorator = class {
           e.stopImmediatePropagation();
           const menu = new import_obsidian3.Menu();
           menu.addItem((item) => {
-            item.setTitle("Create Event").setIcon("calendar-plus").onClick(() => {
+            item.setTitle("Create event").setIcon("calendar-plus").onClick(() => {
               this.plugin.createEventForDate(dateStr);
             });
           });
@@ -1216,7 +1461,7 @@ var CalendarDecorator = class {
           if (eventsOnDate.length > 0) {
             menu.addSeparator();
             menu.addItem((item) => {
-              item.setTitle("\u{1F4CB} View Events Timeline").setIcon("list").onClick(() => {
+              item.setTitle("\u{1F4CB} View events timeline").setIcon("list").onClick(() => {
                 void this.plugin.activateTimelineView();
               });
             });
@@ -1245,6 +1490,10 @@ var CalendarDecorator = class {
         );
         if (dateStr && this.addBtnOverlay) {
           this.currentHoverDate = dateStr;
+          const cellDoc = dayCell.ownerDocument;
+          if (this.addBtnOverlay.ownerDocument !== cellDoc) {
+            cellDoc.body.appendChild(this.addBtnOverlay);
+          }
           const rect = dayCell.getBoundingClientRect();
           this.addBtnOverlay.setCssStyles({
             display: "flex",
@@ -1282,15 +1531,12 @@ var CalendarDecorator = class {
     this.observer = new MutationObserver(() => {
       this.scheduleDecoration();
     });
-    const workspaceEl = activeDocument.querySelector(".workspace");
-    if (workspaceEl) {
-      this.observer.observe(workspaceEl, {
-        childList: true,
-        subtree: true,
-        attributes: false,
-        characterData: false
-      });
-    }
+    this.observer.observe(this.plugin.app.workspace.containerEl, {
+      childList: true,
+      subtree: true,
+      attributes: false,
+      characterData: false
+    });
     this.plugin.register(() => {
       if (this.observer) {
         this.observer.disconnect();
@@ -1551,7 +1797,7 @@ var CalendarDecorator = class {
   onDayContextMenu(e, dateStr) {
     const menu = new import_obsidian3.Menu();
     menu.addItem((item) => {
-      item.setTitle("Create Event").setIcon("calendar-plus").onClick(() => {
+      item.setTitle("Create event").setIcon("calendar-plus").onClick(() => {
         this.plugin.createEventForDate(dateStr);
       });
     });
@@ -1561,7 +1807,7 @@ var CalendarDecorator = class {
     if (eventsOnDate.length > 0) {
       menu.addSeparator();
       menu.addItem((item) => {
-        item.setTitle("\u{1F4CB} View Events").setIcon("list").onClick(() => {
+        item.setTitle("\u{1F4CB} View events").setIcon("list").onClick(() => {
           void this.plugin.activateTimelineView();
         });
       });
@@ -1585,8 +1831,9 @@ var CalendarDecorator = class {
     if (this.decorationTimeoutId !== null) {
       window.clearTimeout(this.decorationTimeoutId);
     }
-    const cells = activeDocument.querySelectorAll(".has-memento-event");
-    cells.forEach((cell) => cell.removeClass("has-memento-event"));
+    this.plugin.app.workspace.iterateAllLeaves((leaf) => {
+      leaf.view.containerEl?.querySelectorAll(".has-memento-event").forEach((cell) => cell.removeClass("has-memento-event"));
+    });
   }
 };
 
@@ -1597,49 +1844,138 @@ var EventSettingsTab = class extends import_obsidian4.PluginSettingTab {
     super(app, plugin);
     this.plugin = plugin;
   }
-  display() {
-    this.render();
+  /**
+   * Declarative mirror of the settings this tab renders, so they are reachable
+   * from Obsidian 1.13's settings search. Rendering still goes through
+   * display() — these definitions describe the same keys, and the framework
+   * reads and writes them through getControlValue/setControlValue below.
+   */
+  getSettingDefinitions() {
+    return [
+      {
+        type: "group",
+        heading: "Startup and indicators",
+        items: [
+          {
+            name: "Open timeline on startup",
+            desc: "Force the timeline panel open every time Obsidian starts. When off, Obsidian simply restores the panel if you left it open.",
+            control: { type: "toggle", key: "openTimelineOnStartup" }
+          },
+          {
+            name: "Show pending count in status bar",
+            desc: "Show a calendar icon and the pending event count in the status bar. Click it to open the timeline. Not available on mobile.",
+            visible: () => !import_obsidian4.Platform.isMobile,
+            control: { type: "toggle", key: "showStatusBarCount" }
+          },
+          {
+            name: "Show pending count on ribbon icon",
+            desc: "Show the pending event count as a badge on the Memento ribbon icon. Works on desktop and mobile.",
+            control: { type: "toggle", key: "showRibbonBadge" }
+          },
+          {
+            name: "Pending count covers",
+            desc: "How far ahead the pending count looks.",
+            control: {
+              type: "dropdown",
+              key: "pendingCountWindow",
+              options: {
+                today: "Today only",
+                week: "Next 7 days",
+                month: "Next 30 days",
+                all: "All upcoming"
+              }
+            }
+          },
+          {
+            name: "Include overdue events",
+            desc: "Also count one-time events that are past due and still active, plus events earlier today whose time has passed. Recurring and external events are never counted as overdue.",
+            control: { type: "toggle", key: "pendingIncludeOverdue" }
+          }
+        ]
+      },
+      {
+        type: "group",
+        heading: "Timeline",
+        items: [
+          {
+            name: "Timeline view mode",
+            desc: "Choose which events to show in the timeline view.",
+            control: {
+              type: "dropdown",
+              key: "timelineViewMode",
+              options: {
+                all: "Show all upcoming events",
+                month: "Show events for current month only"
+              }
+            }
+          },
+          {
+            name: "Show past events",
+            desc: "Display expired one-time events in the list below.",
+            control: { type: "toggle", key: "showPastEventsInSettings" }
+          },
+          {
+            name: "Frontmatter language",
+            desc: "Language for the properties when creating a note from an event.",
+            aliases: ["Title", "Date", "Context", "Fecha", "Contexto"],
+            control: {
+              type: "dropdown",
+              key: "frontmatterLanguage",
+              options: {
+                en: "English (Title, Date, Context)",
+                es: "Spanish (T\xEDtulo, Fecha, Contexto)"
+              }
+            }
+          },
+          {
+            name: "Event notes folder",
+            desc: "Folder where event notes will be created. Leave empty for vault root.",
+            control: {
+              type: "text",
+              key: "eventNoteFolder",
+              placeholder: "E.g. Calendar/events"
+            }
+          }
+        ]
+      },
+      // The remaining sections are dynamic collections rather than fixed
+      // key-backed controls, so they are drawn imperatively into the row
+      // Obsidian gives them.
+      this.imperativeSection(
+        "External calendars",
+        (host) => this.renderExternalCalendars(host)
+      ),
+      this.imperativeSection(
+        "Data management",
+        (host) => this.renderDataManagement(host)
+      ),
+      this.imperativeSection("Events", (host) => this.renderEvents(host))
+    ];
   }
-  render() {
-    const { containerEl } = this;
-    containerEl.empty();
-    containerEl.addClass("memento-settings");
-    this.renderTimelineSettings(containerEl);
-    this.renderExternalCalendars(containerEl);
-    this.renderDataManagement(containerEl);
-    this.renderEvents(containerEl);
+  /**
+   * Wraps an imperative section as a setting definition. The generated row is
+   * hidden and the section is drawn into a container of its own, removed again
+   * on teardown so repeated renders cannot stack duplicates.
+   */
+  imperativeSection(name, draw) {
+    return {
+      name,
+      render: (setting) => {
+        setting.settingEl.empty();
+        setting.settingEl.addClass("memento-settings-section");
+        draw(setting.settingEl);
+      }
+    };
   }
-  renderTimelineSettings(containerEl) {
-    new import_obsidian4.Setting(containerEl).setName("Timeline").setHeading();
-    new import_obsidian4.Setting(containerEl).setName("Timeline view mode").setDesc("Choose which events to show in the timeline view").addDropdown(
-      (dropdown) => dropdown.addOption("all", "Show all upcoming events").addOption("month", "Show events for current month only").setValue(this.plugin.settings.timelineViewMode).onChange(async (value) => {
-        this.plugin.settings.timelineViewMode = value;
-        await this.plugin.saveSettings();
-      })
-    );
-    new import_obsidian4.Setting(containerEl).setName("Show past events").setDesc("Display expired one-time events in the list below").addToggle(
-      (toggle) => toggle.setValue(this.plugin.settings.showPastEventsInSettings).onChange(async (value) => {
-        this.plugin.settings.showPastEventsInSettings = value;
-        void this.plugin.saveSettings().then(() => this.render());
-      })
-    );
-    new import_obsidian4.Setting(containerEl).setName("Frontmatter language").setDesc("Language for the properties when creating a note from an event").addDropdown(
-      (dropdown) => dropdown.addOption("en", "English (Title, Date, Context)").addOption("es", "Spanish (T\xEDtulo, Fecha, Contexto)").setValue(this.plugin.settings.frontmatterLanguage).onChange(async (value) => {
-        this.plugin.settings.frontmatterLanguage = value;
-        await this.plugin.saveSettings();
-      })
-    );
-    new import_obsidian4.Setting(containerEl).setName("Event notes folder").setDesc(
-      "Folder where event notes will be created. Leave empty for vault root."
-    ).addText(
-      (text) => text.setPlaceholder("e.g. Calendar/Events").setValue(this.plugin.settings.eventNoteFolder).onChange(async (value) => {
-        this.plugin.settings.eventNoteFolder = value;
-        await this.plugin.saveSettings();
-      })
-    );
+  getControlValue(key) {
+    return this.plugin.settings[key];
+  }
+  async setControlValue(key, value) {
+    this.plugin.settings[key] = value;
+    await this.plugin.saveSettings();
   }
   renderExternalCalendars(containerEl) {
-    new import_obsidian4.Setting(containerEl).setName("External Calendars").setHeading();
+    new import_obsidian4.Setting(containerEl).setName("External calendars").setHeading();
     let name = "";
     let url = "";
     let refreshIntervalMinutes = 60;
@@ -1673,12 +2009,12 @@ var EventSettingsTab = class extends import_obsidian4.PluginSettingTab {
           enabled: true,
           refreshIntervalMinutes
         });
-        this.render();
+        this.update();
       })
     );
     new import_obsidian4.Setting(containerEl).setName("Refresh external calendars").setDesc("Fetch all enabled ICS subscriptions now").addButton(
       (button) => button.setButtonText("Refresh now").onClick(() => {
-        void this.plugin.syncExternalCalendars().then(() => this.render());
+        void this.plugin.syncExternalCalendars().then(() => this.update());
       })
     );
     for (const source of this.plugin.settings.externalCalendarSources) {
@@ -1694,21 +2030,21 @@ var EventSettingsTab = class extends import_obsidian4.PluginSettingTab {
     ).addToggle(
       (toggle) => toggle.setValue(source.enabled).onChange((value) => {
         this.plugin.updateExternalCalendarSource({ ...source, enabled: value });
-        this.render();
+        this.update();
       })
     ).addButton(
       (button) => button.setButtonText("Refresh").onClick(() => {
-        void this.plugin.syncExternalCalendars([source.id]).then(() => this.render());
+        void this.plugin.syncExternalCalendars([source.id]).then(() => this.update());
       })
     ).addButton(
-      (button) => button.setButtonText("Remove").setWarning().onClick(() => {
+      (button) => button.setButtonText("Remove").setDestructive().onClick(() => {
         this.plugin.deleteExternalCalendarSource(source.id);
-        this.render();
+        this.update();
       })
     );
   }
   renderDataManagement(containerEl) {
-    new import_obsidian4.Setting(containerEl).setName("Data Management").setHeading();
+    new import_obsidian4.Setting(containerEl).setName("Data management").setHeading();
     new import_obsidian4.Setting(containerEl).setName("Export events").setDesc("Create a JSON backup file in the vault root").addButton(
       (button) => button.setButtonText("Export JSON").onClick(() => {
         void this.plugin.exportEventsToJson();
@@ -1724,7 +2060,7 @@ var EventSettingsTab = class extends import_obsidian4.PluginSettingTab {
         try {
           const count = this.plugin.importEventsFromJson(importText);
           new import_obsidian4.Notice(`Imported ${count} events.`);
-          this.render();
+          this.update();
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           new import_obsidian4.Notice(`Import failed: ${message}`);
@@ -1735,14 +2071,14 @@ var EventSettingsTab = class extends import_obsidian4.PluginSettingTab {
   renderEvents(containerEl) {
     new import_obsidian4.Setting(containerEl).setName("Events").setHeading().settingEl.addClass("memento-settings-events-heading");
     new import_obsidian4.Setting(containerEl).setName("Create a new event").setDesc("Add a new event to your calendar").addButton(
-      (button) => button.setButtonText("+ Add Event").setCta().onClick(() => {
+      (button) => button.setButtonText("Add event").setCta().onClick(() => {
         new EventModal(this.app, (event) => {
           this.plugin.settings.events.push({
             ...event,
             id: event.id || generateId(),
             updatedAt: (/* @__PURE__ */ new Date()).toISOString()
           });
-          void this.plugin.saveSettings().then(() => this.render());
+          void this.plugin.saveSettings().then(() => this.update());
         }).open();
       })
     );
@@ -1821,26 +2157,26 @@ var EventSettingsTab = class extends import_obsidian4.PluginSettingTab {
         this.app,
         (updatedEvent) => {
           this.plugin.updateEvent(updatedEvent);
-          this.render();
+          this.update();
         },
         event
       ).open();
     });
     this.addIconButton(actionsEl, "copy", "Duplicate event", () => {
       this.plugin.duplicateEvent(event);
-      this.render();
+      this.update();
     });
     this.addIconButton(actionsEl, "check", "Mark complete", () => {
       this.plugin.setEventStatus(event.id, "completed");
-      this.render();
+      this.update();
     });
     this.addIconButton(actionsEl, "archive", "Archive event", () => {
       this.plugin.setEventStatus(event.id, "archived");
-      this.render();
+      this.update();
     });
     this.addIconButton(actionsEl, "trash-2", "Delete event", () => {
       this.plugin.deleteEvent(event.id);
-      this.render();
+      this.update();
     }).addClass("memento-settings-btn-delete");
   }
   addIconButton(container, icon, label, onClick) {
@@ -1883,22 +2219,26 @@ function parseIcs(icsText, sourceId, seenAt, existingByUid = /* @__PURE__ */ new
     }
     if (line === "END:VEVENT") {
       if (current?.dtstart) {
-        rawEvents.push({
-          uid: current.uid || generateId(),
+        const data = {
+          uid: "",
           summary: current.summary || "Untitled event",
           description: current.description || "",
           location: current.location || "",
           url: current.url || "",
           dtstart: current.dtstart,
+          dtstartTzid: current.dtstartTzid || "",
           dtend: current.dtend || "",
+          dtendTzid: current.dtendTzid || "",
           rrule: current.rrule || ""
-        });
+        };
+        data.uid = current.uid || synthesizeUid(data);
+        rawEvents.push(data);
       }
       current = null;
       continue;
     }
     if (!current) continue;
-    const { name, value } = parseProperty(line);
+    const { name, params, value } = parseProperty(line);
     switch (name) {
       case "UID":
         current.uid = value;
@@ -1917,9 +2257,11 @@ function parseIcs(icsText, sourceId, seenAt, existingByUid = /* @__PURE__ */ new
         break;
       case "DTSTART":
         current.dtstart = value;
+        current.dtstartTzid = params.TZID || "";
         break;
       case "DTEND":
         current.dtend = value;
+        current.dtendTzid = params.TZID || "";
         break;
       case "RRULE":
         current.rrule = value;
@@ -1930,9 +2272,18 @@ function parseIcs(icsText, sourceId, seenAt, existingByUid = /* @__PURE__ */ new
   }
   return rawEvents.map((event) => normalizeIcsEvent(event, sourceId, seenAt, existingByUid));
 }
+function synthesizeUid(event) {
+  const seed = `${event.dtstart}|${event.dtend}|${event.summary}|${event.location}`;
+  let hash = 0;
+  for (let i = 0; i < seed.length; i++) {
+    hash = (hash << 5) - hash + seed.charCodeAt(i);
+    hash |= 0;
+  }
+  return `memento-synthetic-${(hash >>> 0).toString(16)}`;
+}
 function normalizeIcsEvent(event, sourceId, seenAt, existingByUid) {
-  const start = parseIcsDate(event.dtstart);
-  const end = event.dtend ? parseIcsDate(event.dtend) : null;
+  const start = parseIcsDate(event.dtstart, event.dtstartTzid);
+  const end = event.dtend ? parseIcsDate(event.dtend, event.dtendTzid) : null;
   const recurrence = parseRrule(event.rrule);
   const existing = existingByUid.get(event.uid);
   return {
@@ -1970,15 +2321,24 @@ function unfoldIcsLines(text) {
 }
 function parseProperty(line) {
   const colonIdx = line.indexOf(":");
-  if (colonIdx === -1) return { name: line, value: "" };
-  const rawName = line.slice(0, colonIdx);
-  const name = rawName.split(";")[0].toUpperCase();
-  return { name, value: line.slice(colonIdx + 1) };
+  if (colonIdx === -1) return { name: line, params: {}, value: "" };
+  const segments = line.slice(0, colonIdx).split(";");
+  const params = {};
+  for (const segment of segments.slice(1)) {
+    const eq = segment.indexOf("=");
+    if (eq === -1) continue;
+    params[segment.slice(0, eq).toUpperCase()] = segment.slice(eq + 1).replace(/^"|"$/g, "");
+  }
+  return {
+    name: segments[0].toUpperCase(),
+    params,
+    value: line.slice(colonIdx + 1)
+  };
 }
 function decodeIcsText(value) {
   return value.replace(/\\n/gi, "\n").replace(/\\,/g, ",").replace(/\\;/g, ";").replace(/\\\\/g, "\\").trim();
 }
-function parseIcsDate(value) {
+function parseIcsDate(value, tzid = "") {
   const clean = value.trim();
   if (/^\d{8}$/.test(clean)) {
     return {
@@ -1992,20 +2352,74 @@ function parseIcsDate(value) {
     return { date: dateToStr(/* @__PURE__ */ new Date()), time: "", allDay: true };
   }
   if (clean.endsWith("Z")) {
-    const date = /* @__PURE__ */ new Date(
-      `${match[1]}-${match[2]}-${match[3]}T${match[4]}:${match[5]}:00Z`
+    return localParts(
+      /* @__PURE__ */ new Date(`${match[1]}-${match[2]}-${match[3]}T${match[4]}:${match[5]}:00Z`)
     );
-    return {
-      date: dateToStr(date),
-      time: `${date.getHours().toString().padStart(2, "0")}:${date.getMinutes().toString().padStart(2, "0")}`,
-      allDay: false
-    };
+  }
+  if (tzid) {
+    const instant = zonedWallTimeToInstant(
+      Number(match[1]),
+      Number(match[2]),
+      Number(match[3]),
+      Number(match[4]),
+      Number(match[5]),
+      tzid
+    );
+    if (instant) return localParts(instant);
   }
   return {
     date: `${match[1]}-${match[2]}-${match[3]}`,
     time: `${match[4]}:${match[5]}`,
     allDay: false
   };
+}
+function localParts(instant) {
+  return {
+    date: dateToStr(instant),
+    time: `${instant.getHours().toString().padStart(2, "0")}:${instant.getMinutes().toString().padStart(2, "0")}`,
+    allDay: false
+  };
+}
+function timeZoneOffsetMs(instant, timeZone) {
+  try {
+    const formatter = new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      hour12: false,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit"
+    });
+    const parts = {};
+    for (const part of formatter.formatToParts(instant)) {
+      parts[part.type] = part.value;
+    }
+    const hour = parts.hour === "24" ? 0 : Number(parts.hour);
+    const asUtc = Date.UTC(
+      Number(parts.year),
+      Number(parts.month) - 1,
+      Number(parts.day),
+      hour,
+      Number(parts.minute),
+      Number(parts.second)
+    );
+    return asUtc - instant.getTime();
+  } catch {
+    return null;
+  }
+}
+function zonedWallTimeToInstant(year, month, day, hour, minute, timeZone) {
+  const wallAsUtc = Date.UTC(year, month - 1, day, hour, minute);
+  const firstOffset = timeZoneOffsetMs(new Date(wallAsUtc), timeZone);
+  if (firstOffset === null) return null;
+  let instant = new Date(wallAsUtc - firstOffset);
+  const secondOffset = timeZoneOffsetMs(instant, timeZone);
+  if (secondOffset !== null && secondOffset !== firstOffset) {
+    instant = new Date(wallAsUtc - secondOffset);
+  }
+  return instant;
 }
 function parseRrule(rrule) {
   if (!rrule) return { recurrence: "none" };
@@ -2043,6 +2457,25 @@ function frequencyToRecurrence(freq) {
 
 // src/main.ts
 var MementoPlugin = class extends import_obsidian6.Plugin {
+  constructor() {
+    super(...arguments);
+    this.ribbonEl = null;
+    this.statusBarEl = null;
+    this.statusBarCountEl = null;
+    this.indicatorTimeoutId = null;
+    /**
+     * Coalesced settings write. The timeline's search box changes settings on
+     * every keystroke, and each save is a full data.json write plus a recurrence
+     * expansion — far too much work to do per character.
+     */
+    this.saveSettingsDebounced = (0, import_obsidian6.debounce)(
+      () => {
+        void this.saveSettings();
+      },
+      400,
+      true
+    );
+  }
   async onload() {
     await this.loadSettings();
     this.registerView(VIEW_TYPE_TIMELINE, (leaf) => {
@@ -2078,18 +2511,28 @@ var MementoPlugin = class extends import_obsidian6.Plugin {
         void this.syncExternalCalendars();
       }
     });
-    this.addRibbonIcon("calendar-clock", "Memento \u2014 Event Timeline", () => {
-      void this.activateTimelineView();
-    });
+    this.ribbonEl = this.addRibbonIcon(
+      "calendar-clock",
+      "Memento event timeline",
+      () => {
+        void this.activateTimelineView();
+      }
+    );
+    this.ribbonEl.addClass("memento-ribbon-icon");
+    this.createStatusBarItem();
     this.app.workspace.onLayoutReady(() => {
       this.decorator.start();
-      void this.activateTimelineView();
+      if (this.settings.openTimelineOnStartup) {
+        void this.activateTimelineView();
+      }
       void this.syncDueExternalCalendars();
+      this.updatePendingIndicators();
     });
     this.registerInterval(
       window.setInterval(() => {
         this.refreshTimeline();
         this.decorator.refresh();
+        this.updatePendingIndicators();
         void this.syncDueExternalCalendars();
       }, 60 * 1e3)
     );
@@ -2098,9 +2541,11 @@ var MementoPlugin = class extends import_obsidian6.Plugin {
     if (this.decorator) {
       this.decorator.destroy();
     }
-    this.app.workspace.getLeavesOfType(VIEW_TYPE_TIMELINE).forEach((leaf) => {
-      leaf.detach();
-    });
+    if (this.indicatorTimeoutId !== null) {
+      window.clearTimeout(this.indicatorTimeoutId);
+      this.indicatorTimeoutId = null;
+    }
+    this.saveSettingsDebounced.cancel();
   }
   // ─── Settings Persistence ────────────────────────────────────────
   async loadSettings() {
@@ -2110,7 +2555,10 @@ var MementoPlugin = class extends import_obsidian6.Plugin {
       ...data,
       timelineFilters: {
         ...DEFAULT_TIMELINE_FILTERS,
-        ...data.timelineFilters || {}
+        ...data.timelineFilters || {},
+        // Never restore a search term: a query typed weeks ago silently
+        // hiding events on startup is indistinguishable from a bug.
+        search: ""
       },
       externalCalendarSources: data.externalCalendarSources || [],
       externalEventsCache: data.externalEventsCache || [],
@@ -2122,6 +2570,7 @@ var MementoPlugin = class extends import_obsidian6.Plugin {
     await this.saveData(this.settings);
     this.refreshTimeline();
     this.decorator?.refresh();
+    this.updatePendingIndicators();
   }
   // ─── Event Management ────────────────────────────────────────────
   openCreateEventModal() {
@@ -2248,26 +2697,21 @@ var MementoPlugin = class extends import_obsidian6.Plugin {
     await leaf.openFile(file);
   }
   buildNoteContent(event, occurrenceDate) {
-    const isEs = this.settings.frontmatterLanguage === "es";
-    const titleKey = isEs ? "T\xEDtulo" : "Title";
-    const dateKey = isEs ? "Fecha" : "Date";
-    const contextKey = isEs ? "Contexto" : "Context";
-    const sourceKey = isEs ? "Fuente" : "Source";
-    const locationKey = isEs ? "Ubicaci\xF3n" : "Location";
+    const keys = FRONTMATTER_KEYS[this.settings.frontmatterLanguage];
     const dateTimeStr = event.time ? `${occurrenceDate} ${event.time}` : occurrenceDate;
     const source = "sourceId" in event ? "External calendar" : "Memento";
     const location = "location" in event ? event.location || "" : "";
     let content = "---\n";
-    content += `${titleKey}: "${escapeYaml(event.title)}"
+    content += `${keys.title}: "${escapeYaml(event.title)}"
 `;
-    content += `${dateKey}: ${dateTimeStr}
+    content += `${keys.date}: ${dateTimeStr}
 `;
-    content += `${contextKey}: "${escapeYaml(event.context || "")}"
+    content += `${keys.context}: "${escapeYaml(event.context || "")}"
 `;
-    content += `${sourceKey}: "${source}"
+    content += `${keys.source}: "${source}"
 `;
     if (location) {
-      content += `${locationKey}: "${escapeYaml(location)}"
+      content += `${keys.location}: "${escapeYaml(location)}"
 `;
     }
     content += "---\n\n";
@@ -2281,16 +2725,25 @@ ${event.context}
     return content;
   }
   async syncNoteFrontmatter(file, event, occurrenceDate) {
+    const language = this.settings.frontmatterLanguage;
+    const keys = FRONTMATTER_KEYS[language];
+    const stale = FRONTMATTER_KEYS[language === "es" ? "en" : "es"];
     const dateTimeStr = event.time ? `${occurrenceDate} ${event.time}` : occurrenceDate;
-    await this.app.fileManager.processFrontMatter(file, (frontmatter) => {
-      frontmatter.Title = event.title;
-      frontmatter.Date = dateTimeStr;
-      frontmatter.Context = event.context || "";
-      frontmatter.Source = "sourceId" in event ? "External calendar" : "Memento";
-      if ("location" in event && event.location) {
-        frontmatter.Location = event.location;
+    await this.app.fileManager.processFrontMatter(
+      file,
+      (frontmatter) => {
+        for (const key of Object.values(stale)) {
+          delete frontmatter[key];
+        }
+        frontmatter[keys.title] = event.title;
+        frontmatter[keys.date] = dateTimeStr;
+        frontmatter[keys.context] = event.context || "";
+        frontmatter[keys.source] = "sourceId" in event ? "External calendar" : "Memento";
+        if ("location" in event && event.location) {
+          frontmatter[keys.location] = event.location;
+        }
       }
-    });
+    );
   }
   rememberNotePath(event, occurrenceDate, notePath) {
     if ("externalUid" in event) {
@@ -2378,7 +2831,7 @@ ${event.context}
     const filename = `memento-export-${stamp}.json`;
     const payload = JSON.stringify(
       {
-        version: "1.0.5",
+        version: this.manifest.version,
         exportedAt: (/* @__PURE__ */ new Date()).toISOString(),
         events: this.settings.events,
         externalCalendarSources: this.settings.externalCalendarSources
@@ -2402,6 +2855,78 @@ ${event.context}
     void this.saveSettings();
     return imported.length;
   }
+  // ─── Pending Indicators ──────────────────────────────────────────
+  /**
+   * Status bar item showing the pending event count. The status bar is not
+   * available on mobile, which is why the ribbon badge exists alongside it.
+   */
+  createStatusBarItem() {
+    if (import_obsidian6.Platform.isMobile) return;
+    const el = this.addStatusBarItem();
+    el.addClass("memento-status-bar-item", "mod-clickable");
+    const iconEl = el.createSpan({ cls: "memento-status-bar-icon" });
+    renderCalendarCheckIcon(iconEl);
+    this.statusBarCountEl = el.createSpan({ cls: "memento-status-bar-count" });
+    el.addEventListener("click", () => {
+      void this.activateTimelineView();
+    });
+    this.statusBarEl = el;
+  }
+  getPendingEntries() {
+    return getPendingEntries({
+      events: this.settings.events,
+      externalEvents: this.settings.externalEventsCache,
+      externalSources: this.settings.externalCalendarSources,
+      hiddenExternalEventIds: this.settings.hiddenExternalEventIds,
+      countWindow: this.settings.pendingCountWindow,
+      includeOverdue: this.settings.pendingIncludeOverdue
+    });
+  }
+  /**
+   * Debounced: saveSettings() calls this, and the timeline's search box saves
+   * on every keystroke, so a burst of saves must not each pay for a full
+   * recurrence expansion.
+   */
+  updatePendingIndicators() {
+    if (this.indicatorTimeoutId !== null) {
+      window.clearTimeout(this.indicatorTimeoutId);
+    }
+    this.indicatorTimeoutId = window.setTimeout(() => {
+      this.indicatorTimeoutId = null;
+      this.renderPendingIndicators();
+    }, 150);
+  }
+  renderPendingIndicators() {
+    const entries = this.getPendingEntries();
+    const count = entries.length;
+    const tooltip = this.buildPendingTooltip(entries);
+    if (this.statusBarEl && this.statusBarCountEl) {
+      const visible = this.settings.showStatusBarCount && count > 0;
+      this.statusBarEl.toggleClass("memento-is-hidden", !visible);
+      this.statusBarCountEl.setText(count.toString());
+      this.statusBarEl.setAttribute("aria-label", tooltip);
+    }
+    if (this.ribbonEl) {
+      const visible = this.settings.showRibbonBadge && count > 0;
+      this.ribbonEl.toggleClass("memento-has-pending", visible);
+      this.ribbonEl.dataset.mementoPending = count > 99 ? "99+" : count.toString();
+      this.ribbonEl.setAttribute(
+        "aria-label",
+        count > 0 ? `Memento event timeline (${count} pending)` : "Memento event timeline"
+      );
+    }
+  }
+  buildPendingTooltip(entries) {
+    if (entries.length === 0) return "Memento: no pending events";
+    const lines = entries.slice(0, 3).map((entry) => {
+      const time = entry.occurrenceTime ? ` ${formatTimeDisplay(entry.occurrenceTime)}` : "";
+      return `${entry.occurrenceDate}${time} \u2014 ${entry.event.title}`;
+    });
+    if (entries.length > 3) {
+      lines.push(`+${entries.length - 3} more`);
+    }
+    return lines.join("\n");
+  }
   // ─── Timeline View ───────────────────────────────────────────────
   async activateTimelineView() {
     const { workspace } = this.app;
@@ -2416,8 +2941,13 @@ ${event.context}
         leaf = rightLeaf;
       }
     }
-    if (leaf) {
-      void workspace.revealLeaf(leaf);
+    const existing = workspace.getLeavesOfType(VIEW_TYPE_TIMELINE);
+    const keep = existing.find((item) => item.view instanceof TimelineView) ?? existing[0] ?? leaf;
+    for (const duplicate of existing) {
+      if (duplicate !== keep) duplicate.detach();
+    }
+    if (keep) {
+      void workspace.revealLeaf(keep);
     }
   }
   refreshTimeline() {
@@ -2427,6 +2957,45 @@ ${event.context}
         leaf.view.render();
       }
     }
+  }
+};
+function renderCalendarCheckIcon(parent) {
+  const svg = parent.createSvg("svg", {
+    // Array form on purpose: createSvg feeds `cls` straight to classList.add(),
+    // which rejects a space-separated string despite what the typings claim.
+    cls: ["svg-icon", "memento-calendar-check"],
+    attr: {
+      xmlns: "http://www.w3.org/2000/svg",
+      viewBox: "0 0 24 24",
+      fill: "none",
+      stroke: "currentColor",
+      "stroke-width": "2",
+      "stroke-linecap": "round",
+      "stroke-linejoin": "round"
+    }
+  });
+  svg.createSvg("path", { attr: { d: "M8 2v3" } });
+  svg.createSvg("path", { attr: { d: "M16 2v3" } });
+  svg.createSvg("rect", {
+    attr: { x: "3", y: "3", width: "18", height: "18", rx: "2" }
+  });
+  svg.createSvg("path", { attr: { d: "M3 9h18" } });
+  svg.createSvg("path", { attr: { d: "m9 15 2 2 4-4" } });
+}
+var FRONTMATTER_KEYS = {
+  en: {
+    title: "Title",
+    date: "Date",
+    context: "Context",
+    source: "Source",
+    location: "Location"
+  },
+  es: {
+    title: "T\xEDtulo",
+    date: "Fecha",
+    context: "Contexto",
+    source: "Fuente",
+    location: "Ubicaci\xF3n"
   }
 };
 function escapeYaml(value) {

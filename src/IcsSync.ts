@@ -14,7 +14,9 @@ interface IcsEventData {
   location: string;
   url: string;
   dtstart: string;
+  dtstartTzid: string;
   dtend: string;
+  dtendTzid: string;
   rrule: string;
 }
 
@@ -63,23 +65,27 @@ export function parseIcs(
     }
     if (line === "END:VEVENT") {
       if (current?.dtstart) {
-        rawEvents.push({
-          uid: current.uid || generateId(),
+        const data: IcsEventData = {
+          uid: "",
           summary: current.summary || "Untitled event",
           description: current.description || "",
           location: current.location || "",
           url: current.url || "",
           dtstart: current.dtstart,
+          dtstartTzid: current.dtstartTzid || "",
           dtend: current.dtend || "",
+          dtendTzid: current.dtendTzid || "",
           rrule: current.rrule || "",
-        });
+        };
+        data.uid = current.uid || synthesizeUid(data);
+        rawEvents.push(data);
       }
       current = null;
       continue;
     }
     if (!current) continue;
 
-    const { name, value } = parseProperty(line);
+    const { name, params, value } = parseProperty(line);
     switch (name) {
       case "UID":
         current.uid = value;
@@ -98,9 +104,11 @@ export function parseIcs(
         break;
       case "DTSTART":
         current.dtstart = value;
+        current.dtstartTzid = params.TZID || "";
         break;
       case "DTEND":
         current.dtend = value;
+        current.dtendTzid = params.TZID || "";
         break;
       case "RRULE":
         current.rrule = value;
@@ -113,14 +121,30 @@ export function parseIcs(
   return rawEvents.map((event) => normalizeIcsEvent(event, sourceId, seenAt, existingByUid));
 }
 
+/**
+ * Some feeds omit UID. Falling back to a random id made the event look brand
+ * new on every sync: its id churned, so remembered note paths were dropped and
+ * an event the user had hidden came straight back. Derive the id from the
+ * event's own content so it stays put across syncs.
+ */
+function synthesizeUid(event: IcsEventData): string {
+  const seed = `${event.dtstart}|${event.dtend}|${event.summary}|${event.location}`;
+  let hash = 0;
+  for (let i = 0; i < seed.length; i++) {
+    hash = (hash << 5) - hash + seed.charCodeAt(i);
+    hash |= 0;
+  }
+  return `memento-synthetic-${(hash >>> 0).toString(16)}`;
+}
+
 function normalizeIcsEvent(
   event: IcsEventData,
   sourceId: string,
   seenAt: string,
   existingByUid: Map<string, ExternalCalendarEvent>,
 ): ExternalCalendarEvent {
-  const start = parseIcsDate(event.dtstart);
-  const end = event.dtend ? parseIcsDate(event.dtend) : null;
+  const start = parseIcsDate(event.dtstart, event.dtstartTzid);
+  const end = event.dtend ? parseIcsDate(event.dtend, event.dtendTzid) : null;
   const recurrence = parseRrule(event.rrule);
   const existing = existingByUid.get(event.uid);
 
@@ -161,12 +185,29 @@ function unfoldIcsLines(text: string): string[] {
   return lines;
 }
 
-function parseProperty(line: string): { name: string; value: string } {
+function parseProperty(line: string): {
+  name: string;
+  params: Record<string, string>;
+  value: string;
+} {
   const colonIdx = line.indexOf(":");
-  if (colonIdx === -1) return { name: line, value: "" };
-  const rawName = line.slice(0, colonIdx);
-  const name = rawName.split(";")[0].toUpperCase();
-  return { name, value: line.slice(colonIdx + 1) };
+  if (colonIdx === -1) return { name: line, params: {}, value: "" };
+
+  const segments = line.slice(0, colonIdx).split(";");
+  const params: Record<string, string> = {};
+  for (const segment of segments.slice(1)) {
+    const eq = segment.indexOf("=");
+    if (eq === -1) continue;
+    params[segment.slice(0, eq).toUpperCase()] = segment
+      .slice(eq + 1)
+      .replace(/^"|"$/g, "");
+  }
+
+  return {
+    name: segments[0].toUpperCase(),
+    params,
+    value: line.slice(colonIdx + 1),
+  };
 }
 
 function decodeIcsText(value: string): string {
@@ -178,7 +219,10 @@ function decodeIcsText(value: string): string {
     .trim();
 }
 
-function parseIcsDate(value: string): { date: string; time: string; allDay: boolean } {
+function parseIcsDate(
+  value: string,
+  tzid = "",
+): { date: string; time: string; allDay: boolean } {
   const clean = value.trim();
   if (/^\d{8}$/.test(clean)) {
     return {
@@ -194,24 +238,111 @@ function parseIcsDate(value: string): { date: string; time: string; allDay: bool
   }
 
   if (clean.endsWith("Z")) {
-    const date = new Date(
-      `${match[1]}-${match[2]}-${match[3]}T${match[4]}:${match[5]}:00Z`,
+    return localParts(
+      new Date(`${match[1]}-${match[2]}-${match[3]}T${match[4]}:${match[5]}:00Z`),
     );
-    return {
-      date: dateToStr(date),
-      time: `${date.getHours().toString().padStart(2, "0")}:${date
-        .getMinutes()
-        .toString()
-        .padStart(2, "0")}`,
-      allDay: false,
-    };
   }
 
+  if (tzid) {
+    const instant = zonedWallTimeToInstant(
+      Number(match[1]),
+      Number(match[2]),
+      Number(match[3]),
+      Number(match[4]),
+      Number(match[5]),
+      tzid,
+    );
+    if (instant) return localParts(instant);
+  }
+
+  // No TZID, or one this platform cannot resolve: treat the wall time as local,
+  // which is also what RFC 5545 floating times mean.
   return {
     date: `${match[1]}-${match[2]}-${match[3]}`,
     time: `${match[4]}:${match[5]}`,
     allDay: false,
   };
+}
+
+function localParts(instant: Date): {
+  date: string;
+  time: string;
+  allDay: boolean;
+} {
+  return {
+    date: dateToStr(instant),
+    time: `${instant.getHours().toString().padStart(2, "0")}:${instant
+      .getMinutes()
+      .toString()
+      .padStart(2, "0")}`,
+    allDay: false,
+  };
+}
+
+/**
+ * Offset of a named zone from UTC at a given instant, in milliseconds.
+ * Returns null for anything Intl cannot resolve — Outlook feeds ship Windows
+ * zone names such as "W. Europe Standard Time", which are not IANA ids.
+ */
+function timeZoneOffsetMs(instant: Date, timeZone: string): number | null {
+  try {
+    const formatter = new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      hour12: false,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+
+    const parts: Record<string, string> = {};
+    for (const part of formatter.formatToParts(instant)) {
+      parts[part.type] = part.value;
+    }
+
+    const hour = parts.hour === "24" ? 0 : Number(parts.hour);
+    const asUtc = Date.UTC(
+      Number(parts.year),
+      Number(parts.month) - 1,
+      Number(parts.day),
+      hour,
+      Number(parts.minute),
+      Number(parts.second),
+    );
+
+    return asUtc - instant.getTime();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve a wall-clock time in a named zone to the instant it denotes.
+ * The offset is measured twice because the first guess can land on the wrong
+ * side of a DST transition.
+ */
+function zonedWallTimeToInstant(
+  year: number,
+  month: number,
+  day: number,
+  hour: number,
+  minute: number,
+  timeZone: string,
+): Date | null {
+  const wallAsUtc = Date.UTC(year, month - 1, day, hour, minute);
+
+  const firstOffset = timeZoneOffsetMs(new Date(wallAsUtc), timeZone);
+  if (firstOffset === null) return null;
+
+  let instant = new Date(wallAsUtc - firstOffset);
+  const secondOffset = timeZoneOffsetMs(instant, timeZone);
+  if (secondOffset !== null && secondOffset !== firstOffset) {
+    instant = new Date(wallAsUtc - secondOffset);
+  }
+
+  return instant;
 }
 
 function parseRrule(rrule: string): {

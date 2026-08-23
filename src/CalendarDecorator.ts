@@ -22,6 +22,18 @@ export class CalendarDecorator {
   }
 
   /**
+   * The document the workspace actually lives in.
+   *
+   * This used to read the global `activeDocument`, which points at whichever
+   * window was last focused — if that was not the main window (or was still
+   * an about:blank shell at load time), the floating add button was appended
+   * to a document the user never sees.
+   */
+  private get doc(): Document {
+    return this.plugin.app.workspace.containerEl.ownerDocument;
+  }
+
+  /**
    * Start observing the workspace for Calendar plugin views
    */
   start(): void {
@@ -39,16 +51,16 @@ export class CalendarDecorator {
     this.setupDomObserver();
 
     // Track mouse to move the floating button over the calendar days
-    window.addEventListener("mousemove", this.mouseMoveHandler, {
-      passive: true,
-    });
+    this.listenTo(this.doc.defaultView ?? window);
 
-    // Intercept right clicks globally BEFORE Svelte handles them
-    window.addEventListener("contextmenu", this.contextMenuHandler, true);
+    // Pop-out windows get their own listeners; a calendar can be dragged there.
+    this.plugin.registerEvent(
+      this.plugin.app.workspace.on("window-open", (_leaf, win) => {
+        this.listenTo(win);
+      }),
+    );
 
     this.plugin.register(() => {
-      window.removeEventListener("mousemove", this.mouseMoveHandler);
-      window.removeEventListener("contextmenu", this.contextMenuHandler, true);
       if (this.addBtnOverlay) {
         this.addBtnOverlay.remove();
         this.addBtnOverlay = null;
@@ -60,18 +72,29 @@ export class CalendarDecorator {
   }
 
   /**
+   * Registers the mouse handlers on a window. Called for the main window and
+   * for any pop-out the user opens.
+   */
+  private listenTo(win: Window): void {
+    this.plugin.registerDomEvent(win, "mousemove", this.mouseMoveHandler, {
+      passive: true,
+    });
+    // Intercept right clicks BEFORE Svelte handles them
+    this.plugin.registerDomEvent(win, "contextmenu", this.contextMenuHandler, true);
+  }
+
+  /**
    * Creates a single floating add button in the document body.
    */
   private createAddButtonOverlay(): void {
     if (this.addBtnOverlay) return;
 
-    this.addBtnOverlay = activeDocument.createElement("div");
-    this.addBtnOverlay.className = "memento-add-btn memento-floating-btn";
-    this.addBtnOverlay.setText("+");
-    this.addBtnOverlay.setAttribute("aria-label", "Create Event");
+    this.addBtnOverlay = this.doc.body.createDiv({
+      cls: "memento-add-btn memento-floating-btn",
+      text: "+",
+      attr: { "aria-label": "Create event" },
+    });
     this.addBtnOverlay.setCssStyles({ display: "none" }); // Hidden initially
-
-    activeDocument.body.appendChild(this.addBtnOverlay);
 
     this.addBtnOverlay.addEventListener("click", (e) => {
       e.stopPropagation();
@@ -107,7 +130,7 @@ export class CalendarDecorator {
           const menu = new Menu();
           menu.addItem((item) => {
             item
-              .setTitle("Create Event")
+              .setTitle("Create event")
               .setIcon("calendar-plus")
               .onClick(() => {
                 this.plugin.createEventForDate(dateStr);
@@ -123,7 +146,7 @@ export class CalendarDecorator {
             menu.addSeparator();
             menu.addItem((item) => {
               item
-                .setTitle("📋 View Events Timeline")
+                .setTitle("📋 View events timeline")
                 .setIcon("list")
                 .onClick(() => {
                   void this.plugin.activateTimelineView();
@@ -165,6 +188,13 @@ export class CalendarDecorator {
         );
         if (dateStr && this.addBtnOverlay) {
           this.currentHoverDate = dateStr;
+
+          // Follow the calendar into whichever window it is showing in.
+          const cellDoc = dayCell.ownerDocument;
+          if (this.addBtnOverlay.ownerDocument !== cellDoc) {
+            cellDoc.body.appendChild(this.addBtnOverlay);
+          }
+
           const rect = dayCell.getBoundingClientRect();
 
           // Position the floating button over the cell
@@ -211,15 +241,12 @@ export class CalendarDecorator {
     });
 
     // Observe the workspace container for changes
-    const workspaceEl = activeDocument.querySelector(".workspace");
-    if (workspaceEl) {
-      this.observer.observe(workspaceEl, {
-        childList: true,
-        subtree: true,
-        attributes: false,
-        characterData: false,
-      });
-    }
+    this.observer.observe(this.plugin.app.workspace.containerEl, {
+      childList: true,
+      subtree: true,
+      attributes: false,
+      characterData: false,
+    });
 
     // Clean up on unload
     this.plugin.register(() => {
@@ -534,7 +561,7 @@ export class CalendarDecorator {
 
     menu.addItem((item) => {
       item
-        .setTitle("Create Event")
+        .setTitle("Create event")
         .setIcon("calendar-plus")
         .onClick(() => {
           this.plugin.createEventForDate(dateStr);
@@ -550,7 +577,7 @@ export class CalendarDecorator {
       menu.addSeparator();
       menu.addItem((item) => {
         item
-          .setTitle("📋 View Events")
+          .setTitle("📋 View events")
           .setIcon("list")
           .onClick(() => {
             void this.plugin.activateTimelineView();
@@ -580,8 +607,11 @@ export class CalendarDecorator {
       window.clearTimeout(this.decorationTimeoutId);
     }
 
-    // Remove all decoration classes
-    const cells = activeDocument.querySelectorAll(".has-memento-event");
-    cells.forEach((cell) => cell.removeClass("has-memento-event"));
+    // Remove all decoration classes, in every window a calendar may be in
+    this.plugin.app.workspace.iterateAllLeaves((leaf) => {
+      leaf.view.containerEl
+        ?.querySelectorAll(".has-memento-event")
+        .forEach((cell) => cell.removeClass("has-memento-event"));
+    });
   }
 }
