@@ -1,5 +1,7 @@
 # Memento
 
+<a href="https://community.obsidian.md/plugins/memento"><img alt="Get it on Obsidian" src="assets/get-it-on-obsidian.svg"></a>
+
 [![GitHub Repository](https://img.shields.io/badge/GitHub-DuckTapeKiller%2Fmemento-blue?logo=github)](https://github.com/DuckTapeKiller/memento)
 
 **Memento** is a powerful event and timeline management plugin for Obsidian. It seamlessly integrates with the popular Obsidian Calendar plugin to track, manage, and visualize your upcoming events in a beautiful interactive timeline.
