@@ -94,7 +94,7 @@ export class CalendarDecorator {
       text: "+",
       attr: { "aria-label": "Create event" },
     });
-    this.addBtnOverlay.setCssStyles({ display: "none" }); // Hidden initially
+    this.addBtnOverlay.addClass("memento-is-hidden"); // Hidden initially
 
     this.addBtnOverlay.addEventListener("click", (e) => {
       e.stopPropagation();
@@ -198,8 +198,8 @@ export class CalendarDecorator {
           const rect = dayCell.getBoundingClientRect();
 
           // Position the floating button over the cell
-          this.addBtnOverlay.setCssStyles({
-            display: "flex",
+          this.addBtnOverlay.removeClass("memento-is-hidden");
+          this.addBtnOverlay.setCssProps({
             top: `${rect.top + 2}px`,
             left: `${rect.left + 2}px`,
           });
@@ -210,7 +210,7 @@ export class CalendarDecorator {
 
     // Otherwise, hide the button
     if (this.addBtnOverlay) {
-      this.addBtnOverlay.setCssStyles({ display: "none" });
+      this.addBtnOverlay.addClass("memento-is-hidden");
       this.currentHoverDate = null;
     }
   }

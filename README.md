@@ -42,6 +42,8 @@ Memento provides flexible configuration options inside the plugin settings tab:
 - **External Calendars**: Add, enable, disable, refresh, or remove read-only ICS calendar subscriptions.
 - **Data Management**: Export manual events to JSON or import events from a previous Memento JSON export.
 
+The last section of the settings, **Support**, has a link to support Memento on [Ko-fi](https://ko-fi.com/ducktapekiller), a link to report a bug or suggest an idea in the [issues](https://github.com/DuckTapeKiller/memento/issues), and the installed version.
+
 ## Manual Installation
 
 1. Go to the **Releases** page of this repository.

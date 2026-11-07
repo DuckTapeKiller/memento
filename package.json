@@ -1,6 +1,6 @@
 {
   "name": "memento",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "description": "Calendar events plugin for Obsidian with timeline view and recurring events",
   "main": "main.js",
   "type": "module",
@@ -27,7 +27,7 @@
     "@typescript-eslint/parser": "^8.61.0",
     "esbuild": "^0.24.0",
     "eslint": "^10.4.1",
-    "eslint-plugin-obsidianmd": "^0.4.1",
+    "eslint-plugin-obsidianmd": "^0.5.1",
     "obsidian": "latest",
     "prettier": "^3.8.4",
     "typescript": "5.6.x",

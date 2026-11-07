@@ -134,7 +134,7 @@ export class EventModal extends Modal {
       text.inputEl.min = "0";
       text.inputEl.max = "23";
       text.inputEl.placeholder = "HH";
-      text.inputEl.setCssStyles({ width: "4rem", textAlign: "center" });
+      text.inputEl.addClass("memento-time-part");
       text.setValue(currentHour !== "--" ? currentHour : "");
       text.onChange((value) => {
         let val = parseInt(value, 10);
@@ -151,11 +151,10 @@ export class EventModal extends Modal {
     });
 
     // Add a visual separator
-    const separator = timeSetting.controlEl.createSpan({
+    timeSetting.controlEl.createSpan({
       text: " : ",
       cls: "memento-time-separator",
     });
-    separator.setCssStyles({ margin: "0 0.2rem", fontWeight: "bold" });
 
     // Minute Input
     timeSetting.addText((text) => {
@@ -163,7 +162,7 @@ export class EventModal extends Modal {
       text.inputEl.min = "0";
       text.inputEl.max = "59";
       text.inputEl.placeholder = "MM";
-      text.inputEl.setCssStyles({ width: "4rem", textAlign: "center" });
+      text.inputEl.addClass("memento-time-part");
       text.setValue(currentMin !== "--" ? currentMin : "");
       text.onChange((value) => {
         let val = parseInt(value, 10);
@@ -206,7 +205,7 @@ export class EventModal extends Modal {
       text.inputEl.min = "0";
       text.inputEl.max = "23";
       text.inputEl.placeholder = "HH";
-      text.inputEl.setCssStyles({ width: "4rem", textAlign: "center" });
+      text.inputEl.addClass("memento-time-part");
       text.setValue(currentEndHour !== "--" ? currentEndHour : "");
       text.onChange((value) => {
         let val = parseInt(value, 10);
@@ -222,19 +221,17 @@ export class EventModal extends Modal {
       });
     });
 
-    endTimeSetting.controlEl
-      .createSpan({
-        text: " : ",
-        cls: "memento-time-separator",
-      })
-      .setCssStyles({ margin: "0 0.2rem", fontWeight: "bold" });
+    endTimeSetting.controlEl.createSpan({
+      text: " : ",
+      cls: "memento-time-separator",
+    });
 
     endTimeSetting.addText((text) => {
       text.inputEl.type = "number";
       text.inputEl.min = "0";
       text.inputEl.max = "59";
       text.inputEl.placeholder = "MM";
-      text.inputEl.setCssStyles({ width: "4rem", textAlign: "center" });
+      text.inputEl.addClass("memento-time-part");
       text.setValue(currentEndMin !== "--" ? currentEndMin : "");
       text.onChange((value) => {
         let val = parseInt(value, 10);

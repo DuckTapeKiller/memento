@@ -91,6 +91,10 @@ body .memento-add-btn.memento-floating-btn:hover {
   background: var(--memento-accent-hover);
 }
 
+.memento-add-btn.memento-floating-btn.memento-is-hidden {
+  display: none;
+}
+
 /* ================================================================= */
 /*  2. EVENT CREATION MODAL                                          */
 /* ================================================================= */
@@ -160,6 +164,17 @@ body .memento-context-input {
   width: 100%;
   min-height: 80px;
   resize: vertical;
+}
+
+/* The hour and minute boxes of the time fields, and the colon between them. */
+body .memento-time-part {
+  width: 4rem;
+  text-align: center;
+}
+
+.memento-time-separator {
+  margin: 0 0.2rem;
+  font-weight: bold;
 }
 
 .memento-button-row {
@@ -946,4 +961,145 @@ body .memento-settings-danger-heading {
   width: 100%;
   padding: 0;
   border-top: none;
+}
+
+/* A row whose fields need the whole width (Add ICS calendar): the name and
+   description take the first line and the fields the line below, so neither is
+   squeezed. Phones already stack every settings row, so this leaves them alone. */
+body:not(.is-phone) .setting-item.memento-settings-stacked {
+  flex-wrap: wrap;
+  row-gap: var(--size-4-3);
+}
+
+body:not(.is-phone) .memento-settings-stacked > .setting-item-info {
+  flex: 1 1 100%;
+  margin-inline-end: 0;
+}
+
+body:not(.is-phone) .memento-settings-stacked > .setting-item-control {
+  flex: 1 1 100%;
+}
+
+body:not(.is-phone) .memento-settings-stacked > .setting-item-control input[type="text"] {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+body:not(.is-phone) .memento-settings-stacked > .setting-item-control input[type="number"] {
+  flex: 0 1 7em;
+  min-width: 0;
+}
+
+/* On a phone the row is stacked already; the fields wrap instead of shrinking,
+   so each one gets the full width. */
+.is-phone .memento-settings-stacked > .setting-item-control {
+  flex-wrap: wrap;
+}
+
+.is-phone .memento-settings-stacked > .setting-item-control input[type="text"] {
+  flex: 1 1 100%;
+}
+
+.is-phone .memento-settings-stacked > .setting-item-control input[type="number"] {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+/* ================================================================= */
+/*  10. SETTINGS: SUPPORT                                            */
+/* ================================================================= */
+
+/* The Ko-fi card fills its settings row. Everything reads Obsidian's theme
+   variables, so the card follows the theme, light or dark. */
+.setting-item.memento-support-row {
+  display: block;
+}
+
+.memento-support {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--size-4-2);
+  margin: var(--size-4-4) 0 var(--size-4-2);
+  padding: var(--size-4-6) var(--size-4-4);
+  border: var(--border-width) solid var(--background-modifier-border);
+  border-radius: var(--radius-l);
+  background-color: var(--background-secondary);
+  text-align: center;
+}
+
+.memento-support-icon {
+  display: inline-flex;
+  color: var(--color-red);
+}
+
+.memento-support-icon svg {
+  width: var(--icon-xl);
+  height: var(--icon-xl);
+  fill: currentColor;
+}
+
+.memento-support-title {
+  font-size: var(--font-ui-large);
+  font-weight: var(--font-semibold);
+  color: var(--text-normal);
+}
+
+.memento-support p {
+  max-width: 34em;
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+  line-height: var(--line-height-normal);
+}
+
+.memento-support-nowrap {
+  white-space: nowrap;
+}
+
+.memento-support-button {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--size-4-2);
+  margin-top: var(--size-4-2);
+  padding: var(--size-4-2) var(--size-4-4);
+  border-radius: var(--radius-m);
+  background-color: var(--interactive-accent);
+  color: var(--text-on-accent);
+  font-weight: var(--font-semibold);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.memento-support-button:hover {
+  background-color: var(--interactive-accent-hover);
+  color: var(--text-on-accent);
+}
+
+.memento-support-button-icon {
+  display: inline-flex;
+}
+
+.memento-support-button-icon svg {
+  width: var(--icon-s);
+  height: var(--icon-s);
+}
+
+/* The issues link looks like Obsidian's own buttons in a settings row. */
+.memento-support-link {
+  display: inline-flex;
+  align-items: center;
+  padding: var(--size-4-1) var(--size-4-3);
+  border-radius: var(--button-radius);
+  background-color: var(--interactive-normal);
+  box-shadow: var(--input-shadow);
+  color: var(--text-normal);
+  font-size: var(--font-ui-small);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.memento-support-link:hover {
+  background-color: var(--interactive-hover);
+  color: var(--text-normal);
 }

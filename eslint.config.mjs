@@ -8,10 +8,14 @@ export default tseslint.config(
     // esbuild and committed only so releases can ship it.
     ignores: ['main.js', 'node_modules/**', 'dist/**'],
   },
-  eslint.configs.recommended,
-  ...tseslint.configs.recommended,
+  // ESLint's own recommended rules, for code only: Obsidian's config below also
+  // lints package.json, manifest.json and the licence, where these rules cannot
+  // run. Obsidian's config carries the same rules except the three new in
+  // ESLint 10, and all of typescript-eslint's recommended ones.
+  { files: ['**/*.{ts,cts,mts,tsx,js,cjs,mjs,jsx}'], ...eslint.configs.recommended },
   // Obsidian's official guideline rules. Its recommended config carries its own
-  // file globs (TS, JS and package.json), so it is applied without narrowing.
+  // file globs (TS, JS, package.json, manifest.json and the licence), so it is
+  // applied without narrowing.
   ...obsidianmd.configs.recommended,
   {
     // Several recommended rules are type-aware and need the TS program.
@@ -45,7 +49,16 @@ export default tseslint.config(
       'obsidianmd/ui/sentence-case': [
         'warn',
         {
-          brands: ['Memento', 'Obsidian', 'Google', 'Google Calendar', 'iCloud'],
+          brands: [
+            'Memento',
+            'Obsidian',
+            'Google',
+            'Google Calendar',
+            'iCloud',
+            // The Support section names the author and the donation site.
+            'DuckTapeKiller',
+            'Ko-fi',
+          ],
           acronyms: ['ICS', 'JSON', 'URL', 'YAML', 'UID'],
           ignoreWords: [
             // Frontmatter property names quoted verbatim in the UI.
