@@ -1,19 +1,27 @@
 import {
   App,
+  ButtonComponent,
+  ExtraButtonComponent,
   ItemView,
   Menu,
   Modal,
+  SearchComponent,
   Setting,
   WorkspaceLeaf,
   setIcon,
 } from "obsidian";
 import type MementoPlugin from "./main";
 import {
+  DEFAULT_TIMELINE_FILTERS,
+  EventStatus,
   ExternalCalendarEvent,
   MementoEvent,
   TimelineEntry,
   VIEW_TYPE_TIMELINE,
+  daysFromToday,
   formatDateDisplay,
+  formatDayHeading,
+  formatRelativeDay,
   formatTimeDisplay,
   getRecurrenceLabel,
   getTimelineEntries,
@@ -26,39 +34,38 @@ import { EventModal } from "./EventModal";
  * of cards and lock up the renderer. */
 const TIMELINE_RENDER_LIMIT = 200;
 
+/** Shown in the time column of events that have no time. */
+const ALL_DAY_LABEL = "All day";
+
 class ConfirmModal extends Modal {
   constructor(
     app: App,
-    public title: string,
-    public message: string,
-    public onConfirm: () => void,
-    public confirmText: string = "Confirm",
-    public isWarning: boolean = false,
+    private heading: string,
+    private message: string,
+    private confirmText: string,
+    private onConfirm: () => void,
   ) {
     super(app);
   }
 
   onOpen(): void {
-    const { contentEl } = this;
-    contentEl.createEl("h2", { text: this.title });
-    contentEl.createEl("p", { text: this.message });
+    this.setTitle(this.heading);
+    this.modalEl.addClass("memento-confirm-modal");
+    this.contentEl.createEl("p", { text: this.message });
 
-    new Setting(contentEl)
-      .addButton((btn) =>
-        btn.setButtonText("Cancel").onClick(() => {
-          this.close();
-        }),
-      )
-      .addButton((btn) => {
-        btn.setButtonText(this.confirmText).onClick(() => {
-          this.close();
-          this.onConfirm();
-        });
-        if (this.isWarning) {
-          btn.setDestructive();
-        } else {
-          btn.setCta();
-        }
+    const buttons = this.contentEl.createDiv({
+      cls: "modal-button-container memento-modal-buttons",
+    });
+    new ButtonComponent(buttons).setButtonText("Cancel").onClick(() => {
+      this.close();
+    });
+    new ButtonComponent(buttons)
+      .setButtonText(this.confirmText)
+      .setDestructive()
+      .setCta()
+      .onClick(() => {
+        this.close();
+        this.onConfirm();
       });
   }
 
@@ -67,116 +74,89 @@ class ConfirmModal extends Modal {
   }
 }
 
+interface EntryActions {
+  edit: () => void;
+  openNote: () => void;
+  duplicate: () => void;
+  setStatus: (status: EventStatus) => void;
+  setPriority: (highPriority: boolean) => void;
+  deleteEvent: () => void;
+  importExternal: () => void;
+  hideExternal: () => void;
+  copyDetails: () => void;
+}
+
 class EventActionModal extends Modal {
   constructor(
     app: App,
     private entry: TimelineEntry,
     private noteExists: boolean,
-    private actions: {
-      edit: () => void;
-      openNote: () => void;
-      duplicate: () => void;
-      complete: () => void;
-      archive: () => void;
-      deleteEvent: () => void;
-      importExternal: () => void;
-      hideExternal: () => void;
-      copyDetails: () => void;
-    },
+    private showSource: boolean,
+    private actions: EntryActions,
   ) {
     super(app);
   }
 
   onOpen(): void {
-    const { contentEl } = this;
+    const { contentEl, modalEl } = this;
     const event = this.entry.event;
-    contentEl.addClass("memento-action-modal");
-    contentEl.createEl("h2", { text: event.title });
-    contentEl.createEl("p", {
-      text: `${formatDateDisplay(this.entry.occurrenceDate)}${
-        this.entry.occurrenceTime
-          ? ` at ${formatTimeDisplay(this.entry.occurrenceTime)}`
-          : ""
-      }`,
-      cls: "setting-item-description",
-    });
-    contentEl.createEl("p", {
-      text: this.entry.sourceName,
-      cls: "memento-action-source",
-    });
+    const status = getStatus(event);
+    modalEl.addClass("memento-action-modal");
+    this.setTitle(event.title);
+
+    let when = formatDateDisplay(this.entry.occurrenceDate);
+    if (this.entry.occurrenceTime) {
+      when += ` · ${formatTimeDisplay(this.entry.occurrenceTime)}`;
+      if (event.endTime && (!event.endDate || event.endDate === event.date)) {
+        when += ` – ${formatTimeDisplay(event.endTime)}`;
+      }
+    }
+    contentEl.createDiv({ cls: "memento-action-when", text: when });
+
+    const meta = buildMeta(this.entry, this.showSource, status);
+    if (isHighPriority(event)) {
+      meta.unshift({ icon: "flag", text: "High priority" });
+      modalEl.addClass("is-high-priority");
+    }
+    if (meta.length > 0) renderMeta(contentEl, meta, "memento-action-meta");
 
     if (event.context) {
-      contentEl.createEl("p", { text: event.context });
-    }
-    if (isExternalEvent(event) && event.location) {
       contentEl.createEl("p", {
-        text: event.location,
-        cls: "setting-item-description",
+        cls: "memento-action-context",
+        text: event.context,
       });
     }
 
-    const setting = new Setting(contentEl).addButton((btn) =>
-      btn.setButtonText("Cancel").onClick(() => {
-        this.close();
-      }),
-    );
+    const buttons = contentEl.createDiv({
+      cls: "modal-button-container memento-modal-buttons",
+    });
+
+    const more = new ButtonComponent(buttons)
+      .setIcon("ellipsis")
+      .setTooltip("More actions")
+      .onClick(() => {
+        this.openMoreMenu(more.buttonEl);
+      });
+    more.buttonEl.addClass("memento-more-button");
 
     if (this.entry.editable) {
-      setting
-        .addButton((btn) =>
-          btn.setButtonText("Edit event").onClick(() => {
-            this.close();
-            this.actions.edit();
-          }),
-        )
-        .addButton((btn) =>
-          btn.setButtonText("Duplicate").onClick(() => {
-            this.close();
-            this.actions.duplicate();
-          }),
-        )
-        .addButton((btn) =>
-          btn.setButtonText("Complete").onClick(() => {
-            this.close();
-            this.actions.complete();
-          }),
-        )
-        .addButton((btn) =>
-          btn.setButtonText("Archive").onClick(() => {
-            this.close();
-            this.actions.archive();
-          }),
-        );
+      new ButtonComponent(buttons).setButtonText("Edit").onClick(() => {
+        this.close();
+        this.actions.edit();
+      });
     } else {
-      setting
-        .addButton((btn) =>
-          btn.setButtonText("Import").onClick(() => {
-            this.close();
-            this.actions.importExternal();
-          }),
-        )
-        .addButton((btn) =>
-          btn.setButtonText("Hide").onClick(() => {
-            this.close();
-            this.actions.hideExternal();
-          }),
-        );
+      new ButtonComponent(buttons).setButtonText("Import").onClick(() => {
+        this.close();
+        this.actions.importExternal();
+      });
     }
 
-    setting
-      .addButton((btn) =>
-        btn.setButtonText("Copy").onClick(() => {
-          this.actions.copyDetails();
-        }),
-      )
-      .addButton((btn) => {
-        btn
-          .setButtonText(this.noteExists ? "Open Note" : "Create Note")
-          .setCta()
-          .onClick(() => {
-            this.close();
-            this.actions.openNote();
-          });
+    new ButtonComponent(buttons)
+      .setButtonText(this.noteExists ? "Open note" : "Create note")
+      .setCta()
+      .onClick(() => {
+        this.close();
+        this.actions.openNote();
       });
 
     this.scope.register([], "e", () => {
@@ -199,9 +179,82 @@ class EventActionModal extends Modal {
     this.scope.register([], "a", () => {
       if (!this.entry.editable) return false;
       this.close();
-      this.actions.archive();
+      this.actions.setStatus("archived");
       return false;
     });
+  }
+
+  private openMoreMenu(anchor: HTMLElement): void {
+    const status = getStatus(this.entry.event);
+    const menu = new Menu();
+    const add = (title: string, icon: string, run: () => void) => {
+      menu.addItem((item) =>
+        item
+          .setTitle(title)
+          .setIcon(icon)
+          .onClick(() => {
+            this.close();
+            run();
+          }),
+      );
+    };
+
+    if (this.entry.editable) {
+      if (isHighPriority(this.entry.event)) {
+        add("Remove high priority", "flag-off", () =>
+          this.actions.setPriority(false),
+        );
+      } else {
+        add("Mark high priority", "flag", () =>
+          this.actions.setPriority(true),
+        );
+      }
+      add("Duplicate", "copy", this.actions.duplicate);
+      if (status === "completed") {
+        add("Mark as not done", "rotate-ccw", () =>
+          this.actions.setStatus("active"),
+        );
+      } else {
+        add("Mark complete", "check", () =>
+          this.actions.setStatus("completed"),
+        );
+      }
+      if (status === "archived") {
+        add("Restore", "archive-restore", () =>
+          this.actions.setStatus("active"),
+        );
+      } else {
+        add("Archive", "archive", () => this.actions.setStatus("archived"));
+      }
+    }
+
+    menu.addItem((item) =>
+      item
+        .setTitle("Copy details")
+        .setIcon("clipboard")
+        .onClick(() => {
+          this.actions.copyDetails();
+        }),
+    );
+
+    menu.addSeparator();
+    if (this.entry.editable) {
+      menu.addItem((item) =>
+        item
+          .setTitle("Delete")
+          .setIcon("trash-2")
+          .setWarning(true)
+          .onClick(() => {
+            this.close();
+            this.actions.deleteEvent();
+          }),
+      );
+    } else {
+      add("Hide from timeline", "eye-off", this.actions.hideExternal);
+    }
+
+    const rect = anchor.getBoundingClientRect();
+    menu.showAtPosition({ x: rect.left, y: rect.bottom + 4 }, anchor.doc);
   }
 
   onClose(): void {
@@ -211,11 +264,16 @@ class EventActionModal extends Modal {
 
 export class TimelineView extends ItemView {
   plugin: MementoPlugin;
-  private shouldRestoreSearchFocus = false;
-  private searchCursorPosition: number | null = null;
   private filtersExpanded = false;
   private lastRenderSignature: string | null = null;
   private renderLimit = TIMELINE_RENDER_LIMIT;
+  /** Set when the filters or search change: a new result list starts at its top. */
+  private scrollToTop = false;
+
+  private search: SearchComponent | null = null;
+  private filterToggleEl: HTMLElement | null = null;
+  private filtersEl: HTMLElement | null = null;
+  private listEl: HTMLElement | null = null;
 
   constructor(leaf: WorkspaceLeaf, plugin: MementoPlugin) {
     super(leaf);
@@ -235,80 +293,106 @@ export class TimelineView extends ItemView {
   }
 
   async onOpen(): Promise<void> {
-    this.render();
+    this.buildShell();
+    this.render(true);
   }
 
   async onClose(): Promise<void> {
     this.lastRenderSignature = null;
+    this.search = null;
+    this.filterToggleEl = null;
+    this.filtersEl = null;
+    this.listEl = null;
     this.contentEl.empty();
   }
 
-  render(force = false): void {
+  /**
+   * The toolbar is built once and kept, so the search box holds its focus and
+   * cursor while the list below it is redrawn on every keystroke.
+   */
+  private buildShell(): void {
     const { contentEl } = this;
-
-    const { entries, hasMore } = getTimelineEntries(
-      this.plugin.settings.events,
-      this.plugin.settings.timelineViewMode,
-      this.plugin.settings.externalEventsCache,
-      this.plugin.settings.timelineFilters,
-      this.plugin.settings.externalCalendarSources,
-      this.plugin.settings.hiddenExternalEventIds,
-      this.renderLimit,
-    );
-
-    // The plugin re-renders every 60s to keep the "days remaining" counters
-    // fresh. Rebuilding identical DOM resets the scroll position and collapses
-    // the filter panel mid-use, so skip the work when nothing has changed.
-    const signature = this.buildRenderSignature(entries, hasMore);
-    if (
-      !force &&
-      signature === this.lastRenderSignature &&
-      contentEl.childElementCount > 0
-    ) {
-      return;
-    }
-    this.lastRenderSignature = signature;
-
     contentEl.empty();
     contentEl.addClass("memento-timeline-container");
 
-    this.renderFilters(contentEl);
+    const toolbar = contentEl.createDiv({ cls: "memento-toolbar" });
+    const filters = this.plugin.settings.timelineFilters;
 
-    if (entries.length === 0) {
-      this.renderEmptyState(contentEl);
-      return;
+    this.search = new SearchComponent(toolbar)
+      .setPlaceholder("Search events")
+      .setValue(filters.search)
+      .onChange((value) => {
+        this.plugin.settings.timelineFilters.search = value;
+        this.resetRenderLimit();
+        // Redraw now for responsiveness, but let the disk write coalesce.
+        this.render();
+        this.plugin.saveSettingsDebounced();
+      });
+    this.search.inputEl.parentElement?.addClass("memento-search");
+
+    const filterToggle = new ExtraButtonComponent(toolbar)
+      .setIcon("sliders-horizontal")
+      .setTooltip("Filters")
+      .onClick(() => {
+        this.filtersExpanded = !this.filtersExpanded;
+        this.syncFilterState();
+      });
+    this.filterToggleEl = filterToggle.extraSettingsEl;
+    this.filterToggleEl.addClass("memento-toolbar-button");
+
+    new ExtraButtonComponent(toolbar)
+      .setIcon("plus")
+      .setTooltip("New event")
+      .onClick(() => {
+        this.plugin.openCreateEventModal();
+      })
+      .extraSettingsEl.addClass("memento-toolbar-button");
+
+    this.filtersEl = contentEl.createDiv({ cls: "memento-filters" });
+    this.listEl = contentEl.createDiv({ cls: "memento-timeline-wrapper" });
+  }
+
+  render(force = false): void {
+    if (!this.listEl || !this.filtersEl) this.buildShell();
+    const settings = this.plugin.settings;
+
+    const { entries, hasMore } = getTimelineEntries(
+      settings.events,
+      settings.timelineViewMode,
+      settings.externalEventsCache,
+      settings.timelineFilters,
+      settings.externalCalendarSources,
+      settings.hiddenExternalEventIds,
+      this.renderLimit,
+    );
+
+    // The plugin re-renders every 60s to keep the relative days fresh.
+    // Rebuilding identical DOM resets the scroll position, so skip the work
+    // when nothing has changed.
+    const signature = this.buildRenderSignature(entries, hasMore);
+    if (!force && signature === this.lastRenderSignature) return;
+    this.lastRenderSignature = signature;
+
+    // Follow a search changed from elsewhere, but never rewrite the box while
+    // it already holds the same text: that would move the cursor.
+    if (this.search && this.search.getValue() !== settings.timelineFilters.search) {
+      this.search.setValue(settings.timelineFilters.search);
     }
 
-    const timelineWrapper = contentEl.createDiv({
-      cls: "memento-timeline-wrapper",
-    });
-    const ul = timelineWrapper.createEl("ul", { cls: "memento-timeline" });
-
-    for (const entry of entries) {
-      this.renderEntry(ul, entry);
-    }
-
-    if (hasMore) {
-      const more = timelineWrapper.createDiv({ cls: "memento-timeline-more" });
-      more.createEl("p", {
-        text: `Showing the first ${entries.length} events.`,
-        cls: "memento-timeline-more-count",
-      });
-      const button = more.createEl("button", {
-        text: `Show ${TIMELINE_RENDER_LIMIT} more`,
-        cls: "memento-timeline-more-btn",
-        attr: { type: "button" },
-      });
-      button.addEventListener("click", () => {
-        this.renderLimit += TIMELINE_RENDER_LIMIT;
-        this.render(true);
-      });
+    this.renderFilters();
+    this.syncFilterState();
+    this.renderList(entries, hasMore);
+    if (this.scrollToTop && this.listEl) {
+      this.listEl.scrollTop = 0;
+      this.scrollToTop = false;
     }
   }
 
-  /** Filter changes make the old "show more" depth meaningless. */
+  /** Filter changes make the old "show more" depth meaningless, and the
+   * old scroll position with it. */
   private resetRenderLimit(): void {
     this.renderLimit = TIMELINE_RENDER_LIMIT;
+    this.scrollToTop = true;
   }
 
   private buildRenderSignature(
@@ -324,106 +408,65 @@ export class TimelineView extends ItemView {
       sources: this.plugin.settings.externalCalendarSources.map(
         (source) => `${source.id}|${source.name}|${source.enabled}`,
       ),
-      entries: entries.map(
-        (entry) =>
-          `${entry.id}|${entry.occurrenceTime}|${entry.sourceName}|${entry.event.title}|${entry.event.context}`,
-      ),
+      entries: entries.map((entry) => {
+        const event = entry.event;
+        return [
+          entry.id,
+          entry.occurrenceTime,
+          entry.sourceName,
+          event.title,
+          event.context,
+          event.endTime ?? "",
+          getRecurrenceLabel(event),
+          getStatus(event),
+          isHighPriority(event) ? "high" : "",
+          isExternalEvent(event) ? (event.location ?? "") : "",
+        ].join("|");
+      }),
     });
   }
 
-  private renderFilters(container: HTMLElement): void {
+  private hasActiveFilters(): boolean {
     const filters = this.plugin.settings.timelineFilters;
-    const controls = container.createDiv({ cls: "memento-timeline-controls" });
+    return (
+      filters.source !== DEFAULT_TIMELINE_FILTERS.source ||
+      filters.sourceId !== DEFAULT_TIMELINE_FILTERS.sourceId ||
+      filters.dateRange !== DEFAULT_TIMELINE_FILTERS.dateRange ||
+      filters.includeCompleted !== DEFAULT_TIMELINE_FILTERS.includeCompleted ||
+      filters.includeArchived !== DEFAULT_TIMELINE_FILTERS.includeArchived
+    );
+  }
 
-    const headerRow = controls.createDiv({ cls: "memento-search-header" });
-    const searchButton = headerRow.createEl("button", {
-      cls: "memento-search-button",
-      attr: { type: "button" },
-    });
+  /** The calendar name is only worth showing when there is more than one. */
+  private shouldShowSource(): boolean {
+    return this.plugin.settings.externalCalendarSources.some(
+      (source) => source.enabled,
+    );
+  }
 
-    const filtersBody = controls.createDiv({ cls: "memento-filters-body" });
+  private syncFilterState(): void {
+    this.filtersEl?.toggleClass("is-visible", this.filtersExpanded);
+    const toggle = this.filterToggleEl;
+    if (!toggle) return;
+    toggle.toggleClass("is-active", this.filtersExpanded);
+    // A dot on the button says the list is filtered while the panel is shut.
+    toggle.toggleClass("has-active-filters", this.hasActiveFilters());
+    toggle.setAttribute("aria-expanded", String(this.filtersExpanded));
+  }
 
-    const searchArea = filtersBody.createDiv({ cls: "memento-search-area" });
-    const searchInput = searchArea.createEl("input", {
-      type: "search",
-      placeholder: "Search events",
-      cls: "memento-search-input",
-    });
-    searchInput.value = filters.search;
+  private renderFilters(): void {
+    const container = this.filtersEl;
+    if (!container) return;
+    container.empty();
+    const filters = this.plugin.settings.timelineFilters;
 
-    const clearButton = searchArea.createEl("button", {
-      cls: "memento-search-clear",
-      attr: { type: "button", "aria-label": "Clear search" },
-    });
-    clearButton.textContent = "×";
-
-    const filtersGroup = filtersBody.createDiv({
-      cls: "memento-filters-group",
-    });
-
-    const applyVisibility = (
-      visible: boolean,
-      options: { focus?: boolean } = {},
-    ) => {
-      this.filtersExpanded = visible;
-      filtersBody.toggleClass("is-visible", visible);
-      searchButton.toggleClass("is-active", visible);
-      searchButton.textContent = visible ? "Hide filters" : "Show filters";
-      if (!visible) {
-        searchInput.blur();
-        this.shouldRestoreSearchFocus = false;
-        this.searchCursorPosition = null;
-      } else if (options.focus) {
-        window.setTimeout(() => {
-          searchInput.focus({ preventScroll: true });
-          if (this.searchCursorPosition !== null) {
-            const pos = this.searchCursorPosition;
-            searchInput.setSelectionRange(pos, pos);
-          }
-          this.shouldRestoreSearchFocus = false;
-          this.searchCursorPosition = null;
-        }, 0);
-      }
+    const changed = () => {
+      this.resetRenderLimit();
+      void this.plugin.saveSettings();
     };
 
-    // Filters are collapsed by default and stay collapsed on every app start.
-    // The panel only opens when the user explicitly toggles it open — it is
-    // never auto-expanded from persisted (active) filter values.
-    applyVisibility(this.filtersExpanded, {
-      focus: this.shouldRestoreSearchFocus,
-    });
-
-    searchButton.addEventListener("click", () => {
-      const shouldShow = !filtersBody.hasClass("is-visible");
-      applyVisibility(shouldShow, { focus: shouldShow });
-    });
-
-    searchInput.addEventListener("input", (event) => {
-      const target = event.target as HTMLInputElement;
-      filters.search = target.value;
-      this.shouldRestoreSearchFocus = true;
-      this.searchCursorPosition = target.selectionStart ?? target.value.length;
-      this.resetRenderLimit();
-      // Redraw now for responsiveness, but let the disk write coalesce.
-      this.render();
-      this.plugin.saveSettingsDebounced();
-    });
-
-    clearButton.addEventListener("click", () => {
-      if (searchInput.value.length > 0) {
-        searchInput.value = "";
-        filters.search = "";
-        this.shouldRestoreSearchFocus = true;
-        this.searchCursorPosition = 0;
-        this.resetRenderLimit();
-        void this.plugin.saveSettings();
-      } else {
-        applyVisibility(false);
-      }
-    });
-
     this.addThemedDropdown(
-      new Setting(filtersGroup).setName("Source"),
+      new Setting(container).setName("Source"),
       [
         { value: "all", label: "All sources" },
         { value: "memento", label: "Memento only" },
@@ -433,15 +476,12 @@ export class TimelineView extends ItemView {
       (value) => {
         filters.source = value as typeof filters.source;
         filters.sourceId = "";
-        this.shouldRestoreSearchFocus = true;
-        this.searchCursorPosition = null;
-        this.resetRenderLimit();
-        void this.plugin.saveSettings();
+        changed();
       },
     );
 
     this.addThemedDropdown(
-      new Setting(filtersGroup).setName("Calendar"),
+      new Setting(container).setName("Calendar"),
       [
         { value: "", label: "Any calendar" },
         { value: "memento", label: "Memento" },
@@ -453,15 +493,12 @@ export class TimelineView extends ItemView {
       filters.sourceId,
       (value) => {
         filters.sourceId = value;
-        this.shouldRestoreSearchFocus = true;
-        this.searchCursorPosition = null;
-        this.resetRenderLimit();
-        void this.plugin.saveSettings();
+        changed();
       },
     );
 
     this.addThemedDropdown(
-      new Setting(filtersGroup).setName("Date range"),
+      new Setting(container).setName("Dates"),
       [
         { value: "upcoming", label: "Upcoming" },
         { value: "week", label: "Next 7 days" },
@@ -471,32 +508,38 @@ export class TimelineView extends ItemView {
       filters.dateRange,
       (value) => {
         filters.dateRange = value as typeof filters.dateRange;
-        this.shouldRestoreSearchFocus = true;
-        this.searchCursorPosition = null;
-        this.resetRenderLimit();
-        void this.plugin.saveSettings();
+        changed();
       },
     );
 
-    new Setting(filtersGroup).setName("Show completed").addToggle((toggle) =>
+    new Setting(container).setName("Show completed").addToggle((toggle) =>
       toggle.setValue(filters.includeCompleted).onChange((value) => {
         filters.includeCompleted = value;
-        this.shouldRestoreSearchFocus = true;
-        this.searchCursorPosition = null;
-        this.resetRenderLimit();
-        void this.plugin.saveSettings();
+        changed();
       }),
     );
 
-    new Setting(filtersGroup).setName("Show archived").addToggle((toggle) =>
+    new Setting(container).setName("Show archived").addToggle((toggle) =>
       toggle.setValue(filters.includeArchived).onChange((value) => {
         filters.includeArchived = value;
-        this.shouldRestoreSearchFocus = true;
-        this.searchCursorPosition = null;
-        this.resetRenderLimit();
-        void this.plugin.saveSettings();
+        changed();
       }),
     );
+
+    if (this.hasActiveFilters()) {
+      const reset = container.createEl("button", {
+        cls: "memento-filters-reset",
+        text: "Reset filters",
+        attr: { type: "button" },
+      });
+      reset.addEventListener("click", () => {
+        this.plugin.settings.timelineFilters = {
+          ...DEFAULT_TIMELINE_FILTERS,
+          search: filters.search,
+        };
+        changed();
+      });
+    }
   }
 
   /**
@@ -537,115 +580,147 @@ export class TimelineView extends ItemView {
         );
       }
       const rect = button.getBoundingClientRect();
-      menu.showAtPosition({ x: rect.left, y: rect.bottom + 4 });
+      menu.showAtPosition({ x: rect.left, y: rect.bottom + 4 }, button.doc);
     });
   }
 
-  private renderEntry(ul: HTMLElement, entry: TimelineEntry): void {
-    const eventLi = ul.createEl("li", {
-      cls: `memento-tl-event memento-tl-${entry.sourceType}`,
+  private renderList(entries: TimelineEntry[], hasMore: boolean): void {
+    const list = this.listEl;
+    if (!list) return;
+    list.empty();
+
+    if (entries.length === 0) {
+      this.renderEmptyState(list);
+      return;
+    }
+
+    const showSource = this.shouldShowSource();
+    let currentDate = "";
+    let dayList: HTMLElement = list;
+
+    for (const entry of entries) {
+      if (entry.occurrenceDate !== currentDate) {
+        currentDate = entry.occurrenceDate;
+        dayList = this.renderDay(list, currentDate);
+      }
+      this.renderEntry(dayList, entry, showSource);
+    }
+
+    if (hasMore) {
+      const more = list.createDiv({ cls: "memento-timeline-more" });
+      more.createDiv({
+        text: `Showing the first ${entries.length} events`,
+        cls: "memento-timeline-more-count",
+      });
+      new ButtonComponent(more)
+        .setButtonText(`Show ${TIMELINE_RENDER_LIMIT} more`)
+        .onClick(() => {
+          this.renderLimit += TIMELINE_RENDER_LIMIT;
+          this.render(true);
+        });
+    }
+  }
+
+  /** A day heading and the list its events go into. */
+  private renderDay(container: HTMLElement, date: string): HTMLElement {
+    const days = daysFromToday(date);
+    const section = container.createEl("section", { cls: "memento-day" });
+    if (days === 0) section.addClass("is-today");
+    if (days < 0) section.addClass("is-past");
+
+    const header = section.createEl("h3", { cls: "memento-day-header" });
+    header.createSpan({
+      cls: "memento-day-date",
+      text: formatDayHeading(date),
+    });
+    header.createSpan({
+      cls: "memento-day-relative",
+      text: formatRelativeDay(date),
     });
 
-    eventLi.addEventListener("click", () => {
+    return section.createEl("ul", { cls: "memento-day-events" });
+  }
+
+  private renderEntry(
+    ul: HTMLElement,
+    entry: TimelineEntry,
+    showSource: boolean,
+  ): void {
+    const event = entry.event;
+    const status = getStatus(event);
+
+    const li = ul.createEl("li", {
+      cls: ["memento-event", `memento-event-${entry.sourceType}`],
+      attr: { tabindex: "0" },
+    });
+    if (status !== "active") li.addClass(`is-${status}`);
+    if (isHighPriority(event)) li.addClass("is-high-priority");
+
+    li.addEventListener("click", () => {
+      void this.openEntryActions(entry);
+    });
+    li.addEventListener("keydown", (evt) => {
+      if (evt.key !== "Enter" && evt.key !== " ") return;
+      evt.preventDefault();
       void this.openEntryActions(entry);
     });
 
-    const quickBtn = eventLi.createDiv({ cls: "memento-tl-delete-btn" });
-    setIcon(quickBtn, entry.editable ? "trash-2" : "eye-off");
-    quickBtn.addEventListener("click", (e) => {
-      e.stopPropagation();
+    // Time column: a dot in the calendar's colour, then the time.
+    const timeEl = li.createDiv({ cls: "memento-event-time" });
+    timeEl.createSpan({ cls: "memento-event-dot" });
+    const times = timeEl.createDiv({ cls: "memento-event-times" });
+    if (entry.occurrenceTime) {
+      times.createDiv({ text: formatTimeDisplay(entry.occurrenceTime) });
+      if (event.endTime && (!event.endDate || event.endDate === event.date)) {
+        times.createDiv({
+          cls: "memento-event-end",
+          text: formatTimeDisplay(event.endTime),
+        });
+      }
+    } else {
+      times.createDiv({ cls: "memento-event-all-day", text: ALL_DAY_LABEL });
+    }
+
+    const body = li.createDiv({ cls: "memento-event-body" });
+    body.createDiv({ cls: "memento-event-title", text: event.title });
+    if (event.context) {
+      body.createDiv({ cls: "memento-event-context", text: event.context });
+    }
+    const meta = buildMeta(entry, showSource, status);
+    if (meta.length > 0) renderMeta(body, meta, "memento-event-meta");
+
+    // The action has a column of its own, so text can never run under it.
+    const action = li.createEl("button", {
+      cls: "memento-event-action clickable-icon",
+      attr: {
+        type: "button",
+        "aria-label": entry.editable ? "Delete event" : "Hide event",
+      },
+    });
+    setIcon(action, entry.editable ? "trash-2" : "eye-off");
+    action.addEventListener("keydown", (evt) => {
+      evt.stopPropagation();
+    });
+    action.addEventListener("click", (evt) => {
+      evt.stopPropagation();
       if (entry.editable) {
-        new ConfirmModal(
-          this.plugin.app,
-          "Delete Event",
-          "Are you sure you want to permanently delete this event?",
-          () => {
-            this.plugin.deleteEvent(entry.event.id);
-          },
-          "Delete",
-          true,
-        ).open();
+        this.confirmDelete(entry);
       } else {
         this.plugin.hideExternalEvent(entry.event.id);
       }
     });
-
-    const contentDiv = eventLi.createDiv({ cls: "memento-tl-content" });
-    const dateDiv = contentDiv.createDiv({ cls: "memento-tl-date" });
-    dateDiv.createSpan({
-      text: formatDateDisplay(entry.occurrenceDate),
-      cls: "memento-tl-date-text main-date",
-    });
-
-    const metaDiv = contentDiv.createDiv({ cls: "memento-tl-time" });
-    if (entry.occurrenceTime) {
-      metaDiv.createSpan({
-        text: formatTimeDisplay(entry.occurrenceTime),
-        cls: "memento-tl-time-text",
-      });
-    }
-
-    if (entry.event.recurrence !== "none") {
-      metaDiv.createSpan({
-        text: getRecurrenceLabel(entry.event),
-        cls: "memento-tl-recurrence-badge",
-      });
-    }
-
-    metaDiv.createSpan({
-      text: entry.sourceName,
-      cls: `memento-tl-source-badge memento-tl-source-${entry.sourceType}`,
-    });
-
-    this.renderRemaining(contentDiv, entry.occurrenceDate);
-
-    const titleDiv = contentDiv.createDiv({ cls: "memento-tl-title" });
-    titleDiv.createSpan({
-      text: entry.event.title,
-      cls: "memento-tl-title-text",
-    });
-
-    if (entry.event.context) {
-      const contextDiv = contentDiv.createDiv({ cls: "memento-tl-context" });
-      contextDiv.createEl("p", { text: entry.event.context });
-    }
-
-    if (isExternalEvent(entry.event) && entry.event.location) {
-      const locationDiv = contentDiv.createDiv({ cls: "memento-tl-context" });
-      locationDiv.createEl("p", { text: entry.event.location });
-    }
   }
 
-  private renderRemaining(
-    container: HTMLElement,
-    occurrenceDate: string,
-  ): void {
-    const today = new Date();
-    const todayStr = `${today.getFullYear()}-${(today.getMonth() + 1)
-      .toString()
-      .padStart(2, "0")}-${today.getDate().toString().padStart(2, "0")}`;
-    const eventDate = new Date(occurrenceDate + "T00:00:00");
-    const diffTime =
-      eventDate.getTime() - new Date(todayStr + "T00:00:00").getTime();
-    const diffDays = Math.round(diffTime / (1000 * 60 * 60 * 24));
-
-    let remainingText = "";
-    if (diffDays === 0) {
-      remainingText = "(Today)";
-    } else if (diffDays === 1) {
-      remainingText = "(Tomorrow)";
-    } else if (diffDays > 1) {
-      remainingText = `(${diffDays} days remaining)`;
-    } else if (diffDays < 0) {
-      remainingText = `(${-diffDays} days ago)`;
-    }
-
-    if (remainingText) {
-      const remainingDiv = container.createDiv({
-        cls: "memento-tl-remaining",
-      });
-      remainingDiv.createEl("em", { text: remainingText });
-    }
+  private confirmDelete(entry: TimelineEntry): void {
+    new ConfirmModal(
+      this.plugin.app,
+      "Delete event",
+      `“${entry.event.title}” will be deleted, with every repeat of it. This cannot be undone.`,
+      "Delete",
+      () => {
+        this.plugin.deleteEvent(entry.event.id);
+      },
+    ).open();
   }
 
   private async openEntryActions(entry: TimelineEntry): Promise<void> {
@@ -655,57 +730,76 @@ export class TimelineView extends ItemView {
     );
     const fileExists = await this.plugin.app.vault.adapter.exists(filePath);
 
-    new EventActionModal(this.plugin.app, entry, fileExists, {
-      edit: () => {
-        if (isMementoEvent(entry.event)) this.openEditEventModal(entry.event);
+    new EventActionModal(
+      this.plugin.app,
+      entry,
+      fileExists,
+      this.shouldShowSource(),
+      {
+        edit: () => {
+          if (isMementoEvent(entry.event)) this.openEditEventModal(entry.event);
+        },
+        openNote: () => {
+          void this.plugin.createNoteForEvent(entry.event, entry.occurrenceDate);
+        },
+        duplicate: () => {
+          if (isMementoEvent(entry.event))
+            this.plugin.duplicateEvent(entry.event);
+        },
+        setStatus: (status) => {
+          if (isMementoEvent(entry.event))
+            this.plugin.setEventStatus(entry.event.id, status);
+        },
+        setPriority: (highPriority) => {
+          if (isMementoEvent(entry.event))
+            this.plugin.setEventPriority(entry.event.id, highPriority);
+        },
+        deleteEvent: () => {
+          this.confirmDelete(entry);
+        },
+        importExternal: () => {
+          if (isExternalEvent(entry.event))
+            this.plugin.importExternalEvent(entry.event, entry.occurrenceDate);
+        },
+        hideExternal: () => {
+          this.plugin.hideExternalEvent(entry.event.id);
+        },
+        copyDetails: () => {
+          const lines = [
+            entry.event.title,
+            formatDateDisplay(entry.occurrenceDate),
+            entry.occurrenceTime ? formatTimeDisplay(entry.occurrenceTime) : "",
+            entry.event.context,
+          ].filter(Boolean);
+          void navigator.clipboard.writeText(lines.join("\n"));
+        },
       },
-      openNote: () => {
-        void this.plugin.createNoteForEvent(entry.event, entry.occurrenceDate);
-      },
-      duplicate: () => {
-        if (isMementoEvent(entry.event))
-          this.plugin.duplicateEvent(entry.event);
-      },
-      complete: () => {
-        if (isMementoEvent(entry.event))
-          this.plugin.setEventStatus(entry.event.id, "completed");
-      },
-      archive: () => {
-        if (isMementoEvent(entry.event))
-          this.plugin.setEventStatus(entry.event.id, "archived");
-      },
-      deleteEvent: () => {
-        this.plugin.deleteEvent(entry.event.id);
-      },
-      importExternal: () => {
-        if (isExternalEvent(entry.event))
-          this.plugin.importExternalEvent(entry.event, entry.occurrenceDate);
-      },
-      hideExternal: () => {
-        this.plugin.hideExternalEvent(entry.event.id);
-      },
-      copyDetails: () => {
-        const lines = [
-          entry.event.title,
-          formatDateDisplay(entry.occurrenceDate),
-          entry.occurrenceTime ? formatTimeDisplay(entry.occurrenceTime) : "",
-          entry.event.context,
-        ].filter(Boolean);
-        void navigator.clipboard.writeText(lines.join("\n"));
-      },
-    }).open();
+    ).open();
   }
 
   private renderEmptyState(container: HTMLElement): void {
+    const filtered =
+      this.hasActiveFilters() ||
+      this.plugin.settings.timelineFilters.search.trim() !== "";
     const empty = container.createDiv({ cls: "memento-empty-state" });
-    const iconDiv = empty.createDiv({ cls: "memento-empty-icon" });
-    setIcon(iconDiv, "calendar-days");
+    setIcon(empty.createDiv({ cls: "memento-empty-icon" }), "calendar");
 
-    empty.createEl("h3", { text: "No events found" });
-    empty.createEl("p", {
-      text: "Create a Memento event, adjust filters, or add an external ICS calendar in settings.",
-      cls: "memento-empty-desc",
+    empty.createDiv({
+      cls: "memento-empty-title",
+      text: filtered ? "No events match" : "No upcoming events",
     });
+    empty.createDiv({
+      cls: "memento-empty-desc",
+      text: filtered
+        ? "Try another search, or change the filters."
+        : "Right-click a day in the calendar to add one, or add an ICS calendar in the settings.",
+    });
+
+    if (!filtered) {
+      new ButtonComponent(empty).setButtonText("New event").onClick(() => {
+        this.plugin.openCreateEventModal();
+      });
+    }
   }
 
   private openEditEventModal(event: MementoEvent): void {
@@ -717,6 +811,50 @@ export class TimelineView extends ItemView {
       event,
     ).open();
   }
+}
+
+interface MetaItem {
+  icon: string;
+  text: string;
+}
+
+/** The quiet line under an event: repeat, place, calendar and status. */
+function buildMeta(
+  entry: TimelineEntry,
+  showSource: boolean,
+  status: EventStatus,
+): MetaItem[] {
+  const event = entry.event;
+  const meta: MetaItem[] = [];
+  if (event.recurrence !== "none") {
+    meta.push({ icon: "repeat", text: getRecurrenceLabel(event) });
+  }
+  if (isExternalEvent(event) && event.location) {
+    meta.push({ icon: "map-pin", text: event.location });
+  }
+  if (showSource) {
+    meta.push({ icon: "calendar", text: entry.sourceName });
+  }
+  if (status === "completed") meta.push({ icon: "check", text: "Completed" });
+  if (status === "archived") meta.push({ icon: "archive", text: "Archived" });
+  return meta;
+}
+
+function renderMeta(container: HTMLElement, meta: MetaItem[], cls: string): void {
+  const metaEl = container.createDiv({ cls });
+  for (const item of meta) {
+    const itemEl = metaEl.createSpan({ cls: "memento-meta-item" });
+    setIcon(itemEl.createSpan({ cls: "memento-meta-icon" }), item.icon);
+    itemEl.createSpan({ cls: "memento-meta-text", text: item.text });
+  }
+}
+
+function isHighPriority(event: MementoEvent | ExternalCalendarEvent): boolean {
+  return isMementoEvent(event) && !!event.highPriority;
+}
+
+function getStatus(event: MementoEvent | ExternalCalendarEvent): EventStatus {
+  return isMementoEvent(event) ? (event.status ?? "active") : "active";
 }
 
 function isExternalEvent(

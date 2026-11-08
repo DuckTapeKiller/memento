@@ -1,4 +1,4 @@
-import { Menu, WorkspaceLeaf } from "obsidian";
+import { Menu, WorkspaceLeaf, setIcon } from "obsidian";
 import type MementoPlugin from "./main";
 import { getEventDatesSet } from "./types";
 
@@ -91,9 +91,9 @@ export class CalendarDecorator {
 
     this.addBtnOverlay = this.doc.body.createDiv({
       cls: "memento-add-btn memento-floating-btn",
-      text: "+",
-      attr: { "aria-label": "Create event" },
+      attr: { "aria-label": "New event" },
     });
+    setIcon(this.addBtnOverlay, "plus");
     this.addBtnOverlay.addClass("memento-is-hidden"); // Hidden initially
 
     this.addBtnOverlay.addEventListener("click", (e) => {
@@ -146,8 +146,8 @@ export class CalendarDecorator {
             menu.addSeparator();
             menu.addItem((item) => {
               item
-                .setTitle("📋 View events timeline")
-                .setIcon("list")
+                .setTitle("Open event timeline")
+                .setIcon("calendar-clock")
                 .onClick(() => {
                   void this.plugin.activateTimelineView();
                 });
@@ -200,8 +200,8 @@ export class CalendarDecorator {
           // Position the floating button over the cell
           this.addBtnOverlay.removeClass("memento-is-hidden");
           this.addBtnOverlay.setCssProps({
-            top: `${rect.top + 2}px`,
-            left: `${rect.left + 2}px`,
+            top: `${rect.top + 1}px`,
+            left: `${rect.left + 1}px`,
           });
           return;
         }
@@ -551,41 +551,6 @@ export class CalendarDecorator {
     }
 
     return null;
-  }
-
-  /**
-   * Handle right-click on a day cell
-   */
-  private onDayContextMenu(e: MouseEvent, dateStr: string): void {
-    const menu = new Menu();
-
-    menu.addItem((item) => {
-      item
-        .setTitle("Create event")
-        .setIcon("calendar-plus")
-        .onClick(() => {
-          this.plugin.createEventForDate(dateStr);
-        });
-    });
-
-    // If there are events on this date, show them
-    const eventsOnDate = this.plugin.settings.events.filter(
-      (ev) => ev.date === dateStr || ev.recurrence !== "none",
-    );
-
-    if (eventsOnDate.length > 0) {
-      menu.addSeparator();
-      menu.addItem((item) => {
-        item
-          .setTitle("📋 View events")
-          .setIcon("list")
-          .onClick(() => {
-            void this.plugin.activateTimelineView();
-          });
-      });
-    }
-
-    menu.showAtMouseEvent(e);
   }
 
   /**

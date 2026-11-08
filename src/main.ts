@@ -226,6 +226,14 @@ export default class MementoPlugin extends Plugin {
     void this.saveSettings();
   }
 
+  setEventPriority(eventId: string, highPriority: boolean): void {
+    const event = this.settings.events.find((item) => item.id === eventId);
+    if (!event) return;
+    event.highPriority = highPriority || undefined;
+    event.updatedAt = new Date().toISOString();
+    void this.saveSettings();
+  }
+
   deleteEvent(eventId: string): void {
     this.settings.events = this.settings.events.filter((event) => event.id !== eventId);
     void this.saveSettings();

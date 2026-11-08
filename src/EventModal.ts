@@ -1,18 +1,36 @@
-import { App, Modal, Setting, DropdownComponent } from "obsidian";
+import {
+  App,
+  ButtonComponent,
+  DropdownComponent,
+  ExtraButtonComponent,
+  Modal,
+  Setting,
+  TextAreaComponent,
+  TextComponent,
+} from "obsidian";
 import {
   MementoEvent,
   RecurrenceType,
   EventStatus,
   RECURRENCE_LABELS,
   generateId,
-  formatDateDisplay,
   getTodayStr,
 } from "./types";
+
+/** Singular and plural unit after "Every n" in the repeat details. */
+const REPEAT_UNITS: Record<Exclude<RecurrenceType, "none">, [string, string]> = {
+  daily: ["day", "days"],
+  weekly: ["week", "weeks"],
+  monthly: ["month", "months"],
+  yearly: ["year", "years"],
+};
 
 export class EventModal extends Modal {
   private event: Partial<MementoEvent>;
   private onSubmit: (event: MementoEvent) => void;
   private isEditing: boolean;
+  private titleInput: HTMLInputElement | null = null;
+  private titleError: HTMLElement | null = null;
 
   constructor(
     app: App,
@@ -47,6 +65,7 @@ export class EventModal extends Modal {
     const { contentEl, modalEl } = this;
     contentEl.addClass("memento-modal");
     modalEl.addClass("memento-modal-container");
+    this.setTitle(this.isEditing ? "Edit event" : "New event");
 
     // Scroll focused inputs to top middle section on mobile
     contentEl.addEventListener("focusin", (e: FocusEvent) => {
@@ -68,269 +87,118 @@ export class EventModal extends Modal {
       }
     });
 
-    // Header
-    const header = contentEl.createDiv({ cls: "memento-modal-header" });
-    header.createEl("h2", {
-      text: this.isEditing ? "Edit Event" : "Create Event",
-      cls: "memento-modal-title",
+    // What: the title, then free notes.
+    const title = new TextComponent(contentEl)
+      .setPlaceholder("Event title")
+      .setValue(this.event.title || "")
+      .onChange((value) => {
+        this.event.title = value;
+        title.inputEl.removeAttribute("aria-invalid");
+        this.titleError?.addClass("memento-is-hidden");
+      });
+    title.inputEl.addClass("memento-title-input");
+    title.inputEl.setAttribute("aria-label", "Title");
+    this.titleInput = title.inputEl;
+    this.titleError = contentEl.createDiv({
+      cls: "memento-field-error memento-is-hidden",
+      text: "Add a title to save the event.",
     });
 
-    // Date display badge
-    const dateBadge = header.createDiv({ cls: "memento-date-badge" });
-    const updateDateBadge = () => {
-      dateBadge.empty();
-      dateBadge.createSpan({
-        text: formatDateDisplay(this.event.date || getTodayStr()),
-        cls: "memento-date-badge-text",
+    const notes = new TextAreaComponent(contentEl)
+      .setPlaceholder("Notes")
+      .setValue(this.event.context || "")
+      .onChange((value) => {
+        this.event.context = value;
       });
-    };
-    updateDateBadge();
+    notes.inputEl.addClass("memento-context-input");
+    notes.inputEl.setAttribute("aria-label", "Context");
+    notes.inputEl.rows = 3;
 
-    // Form container
+    // When: start, an optional end, and how it repeats.
     const form = contentEl.createDiv({ cls: "memento-form" });
 
-    // Date field
-    new Setting(form)
-      .setName("Date")
-      .setDesc("When does this event occur?")
-      .addText((text) => {
-        text.inputEl.type = "date";
-        text.setValue(this.event.date || getTodayStr());
-        text.onChange((value) => {
-          this.event.date = value;
-          updateDateBadge();
-        });
-        text.inputEl.addClass("memento-date-input");
-      });
-
-    new Setting(form)
-      .setName("End date")
-      .setDesc("Optional end date for longer events")
-      .addText((text) => {
-        text.inputEl.type = "date";
-        text.setValue(this.event.endDate || "");
-        text.onChange((value) => {
-          this.event.endDate = value || undefined;
-        });
-        text.inputEl.addClass("memento-date-input");
-      });
-
-    // Time field (Custom Obsidian Dropdowns)
-    let currentHour = "--";
-    let currentMin = "--";
-    if (this.event.time) {
-      const [h, m] = this.event.time.split(":");
-      currentHour = h;
-      currentMin = m;
-    }
-
-    const timeSetting = new Setting(form)
-      .setName("Time")
-      .setDesc("What time? (Optional)");
-
-    // Hour Input
-    timeSetting.addText((text) => {
-      text.inputEl.type = "number";
-      text.inputEl.min = "0";
-      text.inputEl.max = "23";
-      text.inputEl.placeholder = "HH";
-      text.inputEl.addClass("memento-time-part");
-      text.setValue(currentHour !== "--" ? currentHour : "");
-      text.onChange((value) => {
-        let val = parseInt(value, 10);
-        if (isNaN(val)) {
-          currentHour = "--";
-        } else {
-          if (val < 0) val = 0;
-          if (val > 23) val = 23;
-          currentHour = val.toString().padStart(2, "0");
-          text.setValue(currentHour); // Auto-format to 2 digits
-        }
-        updateTime();
-      });
+    const starts = new Setting(form).setName("Starts");
+    this.addDateInput(starts, this.event.date || getTodayStr(), (value) => {
+      this.event.date = value;
+    });
+    this.addTimeInputs(starts, this.event.time || "", (value) => {
+      this.event.time = value;
     });
 
-    // Add a visual separator
-    timeSetting.controlEl.createSpan({
-      text: " : ",
-      cls: "memento-time-separator",
+    const hasEnd = !!(this.event.endDate || this.event.endTime);
+    const ends = new Setting(form).setName("Ends");
+    ends.settingEl.addClass("memento-ends-row");
+    const endDate = this.addDateInput(ends, this.event.endDate || "", (value) => {
+      this.event.endDate = value || undefined;
+    });
+    const endTime = this.addTimeInputs(ends, this.event.endTime || "", (value) => {
+      this.event.endTime = value;
     });
 
-    // Minute Input
-    timeSetting.addText((text) => {
-      text.inputEl.type = "number";
-      text.inputEl.min = "0";
-      text.inputEl.max = "59";
-      text.inputEl.placeholder = "MM";
-      text.inputEl.addClass("memento-time-part");
-      text.setValue(currentMin !== "--" ? currentMin : "");
-      text.onChange((value) => {
-        let val = parseInt(value, 10);
-        if (isNaN(val)) {
-          currentMin = "--";
-        } else {
-          if (val < 0) val = 0;
-          if (val > 59) val = 59;
-          currentMin = val.toString().padStart(2, "0");
-          text.setValue(currentMin); // Auto-format to 2 digits
-        }
-        updateTime();
-      });
+    const addEnd = form.createEl("a", {
+      cls: "memento-link-button",
+      text: "Add end",
+      attr: { role: "button", tabindex: "0" },
     });
-
-    const updateTime = () => {
-      if (currentHour === "--" && currentMin === "--") {
-        this.event.time = "";
-      } else {
-        const h = currentHour === "--" ? "12" : currentHour;
-        const m = currentMin === "--" ? "00" : currentMin;
-        this.event.time = `${h}:${m}`;
-      }
+    const showEnd = (visible: boolean) => {
+      ends.settingEl.toggleClass("memento-is-hidden", !visible);
+      addEnd.toggleClass("memento-is-hidden", visible);
     };
-
-    let currentEndHour = "--";
-    let currentEndMin = "--";
-    if (this.event.endTime) {
-      const [h, m] = this.event.endTime.split(":");
-      currentEndHour = h;
-      currentEndMin = m;
-    }
-
-    const endTimeSetting = new Setting(form)
-      .setName("End time")
-      .setDesc("Optional end time");
-
-    endTimeSetting.addText((text) => {
-      text.inputEl.type = "number";
-      text.inputEl.min = "0";
-      text.inputEl.max = "23";
-      text.inputEl.placeholder = "HH";
-      text.inputEl.addClass("memento-time-part");
-      text.setValue(currentEndHour !== "--" ? currentEndHour : "");
-      text.onChange((value) => {
-        let val = parseInt(value, 10);
-        if (isNaN(val)) {
-          currentEndHour = "--";
-        } else {
-          if (val < 0) val = 0;
-          if (val > 23) val = 23;
-          currentEndHour = val.toString().padStart(2, "0");
-          text.setValue(currentEndHour);
-        }
-        updateEndTime();
-      });
+    const openEnd = () => {
+      showEnd(true);
+      endDate.inputEl.focus();
+    };
+    addEnd.addEventListener("click", openEnd);
+    addEnd.addEventListener("keydown", (evt) => {
+      if (evt.key !== "Enter" && evt.key !== " ") return;
+      evt.preventDefault();
+      evt.stopPropagation();
+      openEnd();
     });
-
-    endTimeSetting.controlEl.createSpan({
-      text: " : ",
-      cls: "memento-time-separator",
-    });
-
-    endTimeSetting.addText((text) => {
-      text.inputEl.type = "number";
-      text.inputEl.min = "0";
-      text.inputEl.max = "59";
-      text.inputEl.placeholder = "MM";
-      text.inputEl.addClass("memento-time-part");
-      text.setValue(currentEndMin !== "--" ? currentEndMin : "");
-      text.onChange((value) => {
-        let val = parseInt(value, 10);
-        if (isNaN(val)) {
-          currentEndMin = "--";
-        } else {
-          if (val < 0) val = 0;
-          if (val > 59) val = 59;
-          currentEndMin = val.toString().padStart(2, "0");
-          text.setValue(currentEndMin);
-        }
-        updateEndTime();
-      });
-    });
-
-    const updateEndTime = () => {
-      if (currentEndHour === "--" && currentEndMin === "--") {
+    new ExtraButtonComponent(ends.controlEl)
+      .setIcon("x")
+      .setTooltip("Remove end")
+      .onClick(() => {
+        endDate.setValue("");
+        endTime.clear();
+        this.event.endDate = undefined;
         this.event.endTime = "";
-      } else {
-        const h = currentEndHour === "--" ? "12" : currentEndHour;
-        const m = currentEndMin === "--" ? "00" : currentEndMin;
-        this.event.endTime = `${h}:${m}`;
-      }
-    };
-
-    // Title field
-    let titleInput: HTMLInputElement;
-    new Setting(form)
-      .setName("Title")
-      .setDesc("Give your event a name")
-      .addText((text) => {
-        text.setPlaceholder("E.g. Team standup, dentist appointment...");
-        text.setValue(this.event.title || "");
-        text.onChange((value) => {
-          this.event.title = value;
-        });
-        titleInput = text.inputEl;
-        titleInput.addClass("memento-title-input");
+        showEnd(false);
       });
+    // The end sits right under the start, before the link that adds it.
+    form.insertBefore(addEnd, ends.settingEl.nextSibling);
+    showEnd(hasEnd);
 
-    // Context / description field
-    new Setting(form)
-      .setName("Context")
-      .setDesc("Additional details about the event")
-      .addTextArea((text) => {
-        text.setPlaceholder("Add context, notes, or details...");
-        text.setValue(this.event.context || "");
-        text.onChange((value) => {
-          this.event.context = value;
-        });
-        text.inputEl.addClass("memento-context-input");
-        text.inputEl.rows = 3;
+    const repeat = new Setting(form).setName("Repeat");
+    const details = form.createDiv({ cls: "memento-repeat-details" });
+
+    const everySetting = new Setting(details).setName("Every");
+    everySetting.addText((text) => {
+      text.inputEl.type = "number";
+      text.inputEl.min = "1";
+      text.inputEl.addClass("memento-number-input");
+      text.setValue((this.event.recurrenceInterval || 1).toString());
+      text.onChange((value) => {
+        const parsed = parseInt(value, 10);
+        this.event.recurrenceInterval =
+          Number.isNaN(parsed) || parsed < 1 ? 1 : parsed;
+        updateRepeat();
       });
+    });
+    const unitEl = everySetting.controlEl.createSpan({ cls: "memento-unit" });
 
-    // Recurrence field
-    new Setting(form)
-      .setName("Recurrence")
-      .setDesc("Does this event repeat?")
-      .addDropdown((dropdown: DropdownComponent) => {
-        for (const [value, label] of Object.entries(RECURRENCE_LABELS)) {
-          dropdown.addOption(value, label);
-        }
-        dropdown.setValue(this.event.recurrence || "none");
-        dropdown.onChange((value) => {
-          this.event.recurrence = value as RecurrenceType;
-        });
-      });
+    const untilSetting = new Setting(details).setName("Until");
+    this.addDateInput(untilSetting, this.event.recurrenceEndDate || "", (value) => {
+      this.event.recurrenceEndDate = value || undefined;
+    });
 
-    new Setting(form)
-      .setName("Repeat interval")
-      .setDesc("Use 1 for every day/week/month/year, 2 for every other, etc.")
+    new Setting(details)
+      .setName("Occurrences")
       .addText((text) => {
         text.inputEl.type = "number";
         text.inputEl.min = "1";
-        text.setValue((this.event.recurrenceInterval || 1).toString());
-        text.onChange((value) => {
-          const parsed = parseInt(value, 10);
-          this.event.recurrenceInterval =
-            Number.isNaN(parsed) || parsed < 1 ? 1 : parsed;
-        });
-      });
-
-    new Setting(form)
-      .setName("Repeat until")
-      .setDesc("Optional recurrence end date")
-      .addText((text) => {
-        text.inputEl.type = "date";
-        text.setValue(this.event.recurrenceEndDate || "");
-        text.onChange((value) => {
-          this.event.recurrenceEndDate = value || undefined;
-        });
-      });
-
-    new Setting(form)
-      .setName("Repeat count")
-      .setDesc("Optional maximum number of occurrences")
-      .addText((text) => {
-        text.inputEl.type = "number";
-        text.inputEl.min = "1";
+        text.inputEl.addClass("memento-number-input");
+        text.setPlaceholder("–");
         text.setValue(this.event.recurrenceCount?.toString() || "");
         text.onChange((value) => {
           const parsed = parseInt(value, 10);
@@ -339,38 +207,70 @@ export class EventModal extends Modal {
         });
       });
 
-    new Setting(form)
-      .setName("Status")
-      .setDesc("Completed and archived events are hidden unless enabled")
-      .addDropdown((dropdown: DropdownComponent) => {
-        dropdown
-          .addOption("active", "Active")
-          .addOption("completed", "Completed")
-          .addOption("archived", "Archived")
-          .setValue(this.event.status || "active")
-          .onChange((value) => {
-            this.event.status = value as EventStatus;
-          });
+    const updateRepeat = () => {
+      const recurrence = this.event.recurrence || "none";
+      details.toggleClass("memento-is-hidden", recurrence === "none");
+      if (recurrence !== "none") {
+        const [one, many] = REPEAT_UNITS[recurrence];
+        unitEl.setText((this.event.recurrenceInterval || 1) === 1 ? one : many);
+      }
+    };
+
+    repeat.addDropdown((dropdown: DropdownComponent) => {
+      for (const [value, label] of Object.entries(RECURRENCE_LABELS)) {
+        dropdown.addOption(value, label);
+      }
+      dropdown.setValue(this.event.recurrence || "none");
+      dropdown.onChange((value) => {
+        this.event.recurrence = value as RecurrenceType;
+        updateRepeat();
       });
-
-    // Buttons
-    const buttonRow = contentEl.createDiv({ cls: "memento-button-row" });
-
-    const cancelBtn = buttonRow.createEl("button", {
-      text: "Cancel",
-      cls: "memento-btn memento-btn-secondary",
     });
-    cancelBtn.addEventListener("click", () => this.close());
+    // The details belong under the dropdown that opens them.
+    form.insertBefore(details, repeat.settingEl.nextSibling);
+    updateRepeat();
 
-    const submitBtn = buttonRow.createEl("button", {
-      text: this.isEditing ? "Save Changes" : "Create Event",
-      cls: "memento-btn memento-btn-primary",
+    new Setting(form)
+      .setName("High priority")
+      .setDesc("Keep it highlighted in the timeline.")
+      .addToggle((toggle) =>
+        toggle.setValue(!!this.event.highPriority).onChange((value) => {
+          this.event.highPriority = value;
+        }),
+      );
+
+    // A new event is always active, so the status only matters when editing.
+    if (this.isEditing) {
+      new Setting(form)
+        .setName("Status")
+        .addDropdown((dropdown: DropdownComponent) => {
+          dropdown
+            .addOption("active", "Active")
+            .addOption("completed", "Completed")
+            .addOption("archived", "Archived")
+            .setValue(this.event.status || "active")
+            .onChange((value) => {
+              this.event.status = value as EventStatus;
+            });
+        });
+    }
+
+    const buttons = contentEl.createDiv({
+      cls: "modal-button-container memento-modal-buttons",
     });
-    submitBtn.addEventListener("click", () => this.handleSubmit());
+    new ButtonComponent(buttons).setButtonText("Cancel").onClick(() => {
+      this.close();
+    });
+    new ButtonComponent(buttons)
+      .setButtonText(this.isEditing ? "Save" : "Create event")
+      .setCta()
+      .onClick(() => {
+        this.handleSubmit();
+      });
 
     // Focus title input after render
     window.setTimeout(() => {
-      if (titleInput) titleInput.focus();
+      title.inputEl.focus();
     }, 50);
 
     // Enter key to submit
@@ -383,11 +283,103 @@ export class EventModal extends Modal {
     });
   }
 
+  private addDateInput(
+    setting: Setting,
+    value: string,
+    onChange: (value: string) => void,
+  ): TextComponent {
+    const text = new TextComponent(setting.controlEl);
+    text.inputEl.type = "date";
+    text.inputEl.addClass("memento-date-input");
+    text.setValue(value);
+    text.onChange(onChange);
+    return text;
+  }
+
+  /**
+   * Hour and minute boxes. Number boxes rather than a native time input,
+   * whose look and 12/24-hour behaviour differ between platforms.
+   */
+  private addTimeInputs(
+    setting: Setting,
+    value: string,
+    onChange: (value: string) => void,
+  ): { clear: () => void } {
+    let hour = "--";
+    let minute = "--";
+    if (value) {
+      const [h, m] = value.split(":");
+      hour = h ?? "--";
+      minute = m ?? "--";
+    }
+
+    const emit = () => {
+      if (hour === "--" && minute === "--") {
+        onChange("");
+      } else {
+        const h = hour === "--" ? "12" : hour;
+        const m = minute === "--" ? "00" : minute;
+        onChange(`${h}:${m}`);
+      }
+    };
+
+    const wrap = setting.controlEl.createDiv({ cls: "memento-time" });
+    const part = (
+      initial: string,
+      placeholder: string,
+      max: number,
+      label: string,
+      set: (v: string) => void,
+    ): TextComponent => {
+      const text = new TextComponent(wrap);
+      text.inputEl.type = "number";
+      text.inputEl.min = "0";
+      text.inputEl.max = String(max);
+      text.inputEl.placeholder = placeholder;
+      text.inputEl.setAttribute("aria-label", label);
+      text.inputEl.addClass("memento-time-part");
+      text.setValue(initial !== "--" ? initial : "");
+      text.onChange((raw) => {
+        let val = parseInt(raw, 10);
+        if (Number.isNaN(val)) {
+          set("--");
+        } else {
+          if (val < 0) val = 0;
+          if (val > max) val = max;
+          const padded = val.toString().padStart(2, "0");
+          set(padded);
+          text.setValue(padded); // Auto-format to 2 digits
+        }
+        emit();
+      });
+      return text;
+    };
+
+    const hourInput = part(hour, "HH", 23, "Hour", (v) => {
+      hour = v;
+    });
+    wrap.createSpan({ cls: "memento-time-separator", text: ":" });
+    const minuteInput = part(minute, "MM", 59, "Minute", (v) => {
+      minute = v;
+    });
+
+    return {
+      clear: () => {
+        hour = "--";
+        minute = "--";
+        hourInput.setValue("");
+        minuteInput.setValue("");
+        emit();
+      },
+    };
+  }
+
   private handleSubmit(): void {
     if (!this.event.title?.trim()) {
-      // Shake the modal to indicate validation error
-      this.contentEl.addClass("memento-shake");
-      window.setTimeout(() => this.contentEl.removeClass("memento-shake"), 500);
+      // Say which field is missing and put the cursor there.
+      this.titleInput?.setAttribute("aria-invalid", "true");
+      this.titleError?.removeClass("memento-is-hidden");
+      this.titleInput?.focus();
       return;
     }
 
@@ -404,6 +396,7 @@ export class EventModal extends Modal {
       recurrenceEndDate: this.event.recurrenceEndDate || undefined,
       recurrenceCount: this.event.recurrenceCount,
       status: this.event.status || "active",
+      highPriority: this.event.highPriority || undefined,
       notePaths: this.event.notePaths || {},
       createdAt: this.event.createdAt || new Date().toISOString(),
       updatedAt: new Date().toISOString(),

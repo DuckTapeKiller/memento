@@ -22,6 +22,8 @@ export interface MementoEvent {
   recurrenceEndDate?: string;
   recurrenceCount?: number;
   status?: EventStatus;
+  /** Marked high priority: kept highlighted in the timeline. */
+  highPriority?: boolean;
   notePaths?: Record<string, string>;
   createdAt: string; // ISO timestamp
   updatedAt?: string; // ISO timestamp
@@ -145,32 +147,66 @@ export function generateId(): string {
 }
 
 /**
- * Format a date string "YYYY-MM-DD" into a human-readable string
+ * Format a date string "YYYY-MM-DD" the way the system writes a full date,
+ * weekday included ("Sunday, November 8, 2026", "domingo, 8 de noviembre de 2026").
  */
 export function formatDateDisplay(dateStr: string): string {
-  const date = new Date(dateStr + "T00:00:00");
-  const mainDate = date.toLocaleDateString(undefined, {
+  return new Date(dateStr + "T00:00:00").toLocaleDateString(undefined, {
+    weekday: "long",
     year: "numeric",
     month: "long",
     day: "numeric",
   });
-  const weekday = date.toLocaleDateString(undefined, {
-    weekday: "long",
-  });
-  return `${mainDate} (${weekday})`;
 }
 
 /**
- * Format time "HH:mm" into 12-hour display
+ * Short date for a timeline day heading ("Sun, Nov 8", "dom, 8 nov"). The year
+ * is added only when it is not the current one.
+ */
+export function formatDayHeading(dateStr: string): string {
+  const date = new Date(dateStr + "T00:00:00");
+  const options: Intl.DateTimeFormatOptions = {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+  };
+  if (date.getFullYear() !== new Date().getFullYear()) {
+    options.year = "numeric";
+  }
+  return date.toLocaleDateString(undefined, options);
+}
+
+/** Whole days from today to the date: 0 today, 1 tomorrow, -1 yesterday. */
+export function daysFromToday(dateStr: string): number {
+  const target = new Date(dateStr + "T00:00:00").getTime();
+  const today = new Date(getTodayStr() + "T00:00:00").getTime();
+  return Math.round((target - today) / (1000 * 60 * 60 * 24));
+}
+
+/**
+ * How far the date is from today, in the same language as the dates
+ * ("today", "tomorrow", "in 4 days"; "hoy", "mañana", "dentro de 4 días").
+ */
+export function formatRelativeDay(dateStr: string): string {
+  return new Intl.RelativeTimeFormat(undefined, { numeric: "auto" }).format(
+    daysFromToday(dateStr),
+    "day",
+  );
+}
+
+/**
+ * Format time "HH:mm" in the system's own clock, 24-hour or AM/PM, so it
+ * matches the dates around it.
  */
 export function formatTimeDisplay(time: string): string {
   if (!time) return "";
   const [h, m] = time.split(":").map(Number);
   if (h === undefined || m === undefined || Number.isNaN(h) || Number.isNaN(m))
     return time;
-  const ampm = h >= 12 ? "PM" : "AM";
-  const hour12 = h % 12 || 12;
-  return `${hour12}:${m.toString().padStart(2, "0")} ${ampm}`;
+  return new Date(2000, 0, 1, h, m).toLocaleTimeString(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
 
 /**

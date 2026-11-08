@@ -1,5 +1,6 @@
 import {
   App,
+  ExtraButtonComponent,
   Notice,
   Platform,
   PluginSettingTab,
@@ -306,7 +307,9 @@ export class EventSettingsTab extends PluginSettingTab {
       .setName(source.name)
       .setDesc(
         `${sourceEvents.length} cached events${
-          source.lastFetchedAt ? ` · Last sync ${source.lastFetchedAt}` : ""
+          source.lastFetchedAt
+            ? ` · Last sync ${formatSyncTime(source.lastFetchedAt)}`
+            : ""
         }${source.lastError ? ` · Error: ${source.lastError}` : ""}`,
       )
       .addToggle((toggle) =>
@@ -428,44 +431,30 @@ export class EventSettingsTab extends PluginSettingTab {
 
   private renderEventItem(container: HTMLElement, event: MementoEvent): void {
     const eventEl = container.createDiv({ cls: "memento-settings-event" });
+    const status = event.status || "active";
+    if (status !== "active") eventEl.addClass(`is-${status}`);
+    if (event.highPriority) eventEl.addClass("is-high-priority");
     const infoEl = eventEl.createDiv({ cls: "memento-settings-event-info" });
 
-    const titleRow = infoEl.createDiv({
-      cls: "memento-settings-event-title-row",
-    });
-    titleRow.createSpan({
+    infoEl.createDiv({
       text: event.title,
       cls: "memento-settings-event-title",
     });
 
-    titleRow.createSpan({
-      text: event.status || "active",
-      cls: "memento-settings-event-badge",
+    // Date, time, repeat and status on one quiet line.
+    const parts = [formatDateDisplay(event.date)];
+    if (event.highPriority) parts.unshift("High priority");
+    if (event.time) parts.push(formatTimeDisplay(event.time));
+    if (event.recurrence !== "none") parts.push(getRecurrenceLabel(event));
+    if (status === "completed") parts.push("Completed");
+    if (status === "archived") parts.push("Archived");
+    infoEl.createDiv({
+      text: parts.join(" · "),
+      cls: "memento-settings-event-meta",
     });
-
-    if (event.recurrence !== "none") {
-      titleRow.createSpan({
-        text: getRecurrenceLabel(event),
-        cls: "memento-settings-event-badge",
-      });
-    }
-
-    const metaRow = infoEl.createDiv({ cls: "memento-settings-event-meta" });
-    metaRow.createSpan({
-      text: formatDateDisplay(event.date),
-      cls: "memento-settings-event-date",
-    });
-
-    if (event.time) {
-      metaRow.createSpan({ text: " · " });
-      metaRow.createSpan({
-        text: formatTimeDisplay(event.time),
-        cls: "memento-settings-event-time",
-      });
-    }
 
     if (event.context) {
-      infoEl.createEl("p", {
+      infoEl.createDiv({
         text: event.context,
         cls: "memento-settings-event-context",
       });
@@ -513,12 +502,28 @@ export class EventSettingsTab extends PluginSettingTab {
     label: string,
     onClick: () => void,
   ): HTMLElement {
-    const button = container.createEl("button", {
-      cls: "memento-settings-btn",
-      attr: { "aria-label": label },
-    });
-    setIcon(button, icon);
-    button.addEventListener("click", onClick);
-    return button;
+    // Obsidian's own icon button, which themes draw as a bare icon.
+    const button = new ExtraButtonComponent(container)
+      .setIcon(icon)
+      .setTooltip(label)
+      .onClick(() => {
+        onClick();
+      });
+    button.extraSettingsEl.addClass("memento-settings-btn");
+    return button.extraSettingsEl;
   }
+
+}
+
+/** A stored sync time ("2026-11-08T21:26:34.246Z") as the system writes a date and time. */
+function formatSyncTime(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  return date.toLocaleString(undefined, {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
