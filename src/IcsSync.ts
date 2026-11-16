@@ -285,8 +285,43 @@ function localParts(instant: Date): {
  * zone names such as "W. Europe Standard Time", which are not IANA ids.
  */
 function timeZoneOffsetMs(instant: Date, timeZone: string): number | null {
+  const formatter = zoneFormatter(timeZone);
+  if (!formatter) return null;
+
+  const parts: Record<string, string> = {};
+  for (const part of formatter.formatToParts(instant)) {
+    parts[part.type] = part.value;
+  }
+
+  const hour = parts.hour === "24" ? 0 : Number(parts.hour);
+  const asUtc = Date.UTC(
+    Number(parts.year),
+    Number(parts.month) - 1,
+    Number(parts.day),
+    hour,
+    Number(parts.minute),
+    Number(parts.second),
+  );
+
+  return asUtc - instant.getTime();
+}
+
+/**
+ * One formatter per zone, or null for a zone Intl cannot resolve. Building a
+ * formatter is by far the slowest step of reading a feed, and a feed names the
+ * same zone on every event: a new one for each date made a calendar of 2,000
+ * events take about thirty times longer to read, on the main thread, each time
+ * Obsidian opened with a refresh due.
+ */
+const zoneFormatters = new Map<string, Intl.DateTimeFormat | null>();
+
+function zoneFormatter(timeZone: string): Intl.DateTimeFormat | null {
+  const cached = zoneFormatters.get(timeZone);
+  if (cached !== undefined) return cached;
+
+  let formatter: Intl.DateTimeFormat | null;
   try {
-    const formatter = new Intl.DateTimeFormat("en-US", {
+    formatter = new Intl.DateTimeFormat("en-US", {
       timeZone,
       hour12: false,
       year: "numeric",
@@ -296,26 +331,11 @@ function timeZoneOffsetMs(instant: Date, timeZone: string): number | null {
       minute: "2-digit",
       second: "2-digit",
     });
-
-    const parts: Record<string, string> = {};
-    for (const part of formatter.formatToParts(instant)) {
-      parts[part.type] = part.value;
-    }
-
-    const hour = parts.hour === "24" ? 0 : Number(parts.hour);
-    const asUtc = Date.UTC(
-      Number(parts.year),
-      Number(parts.month) - 1,
-      Number(parts.day),
-      hour,
-      Number(parts.minute),
-      Number(parts.second),
-    );
-
-    return asUtc - instant.getTime();
   } catch {
-    return null;
+    formatter = null;
   }
+  zoneFormatters.set(timeZone, formatter);
+  return formatter;
 }
 
 /**

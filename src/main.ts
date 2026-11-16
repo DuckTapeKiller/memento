@@ -29,6 +29,9 @@ import { CalendarDecorator } from "./CalendarDecorator";
 import { EventSettingsTab } from "./EventSettingsTab";
 import { syncExternalCalendarSource } from "./IcsSync";
 
+/** How long after Obsidian has opened the first calendar refresh waits. */
+const STARTUP_SYNC_DELAY_MS = 5000;
+
 export default class MementoPlugin extends Plugin {
   settings!: MementoSettings;
   private decorator!: CalendarDecorator;
@@ -36,6 +39,7 @@ export default class MementoPlugin extends Plugin {
   private statusBarEl: HTMLElement | null = null;
   private statusBarCountEl: HTMLElement | null = null;
   private indicatorTimeoutId: number | null = null;
+  private startupSyncTimeoutId: number | null = null;
 
   /**
    * Coalesced settings write. The timeline's search box changes settings on
@@ -108,7 +112,13 @@ export default class MementoPlugin extends Plugin {
       if (this.settings.openTimelineOnStartup) {
         void this.activateTimelineView();
       }
-      void this.syncDueExternalCalendars();
+      // A due refresh downloads and reads every subscribed calendar, then
+      // saves and redraws. None of it is needed to open: the events from the
+      // last refresh are already shown. Let Obsidian finish opening first.
+      this.startupSyncTimeoutId = window.setTimeout(() => {
+        this.startupSyncTimeoutId = null;
+        void this.syncDueExternalCalendars();
+      }, STARTUP_SYNC_DELAY_MS);
       this.updatePendingIndicators();
     });
 
@@ -130,6 +140,11 @@ export default class MementoPlugin extends Plugin {
     if (this.indicatorTimeoutId !== null) {
       window.clearTimeout(this.indicatorTimeoutId);
       this.indicatorTimeoutId = null;
+    }
+
+    if (this.startupSyncTimeoutId !== null) {
+      window.clearTimeout(this.startupSyncTimeoutId);
+      this.startupSyncTimeoutId = null;
     }
 
     this.saveSettingsDebounced.cancel();
